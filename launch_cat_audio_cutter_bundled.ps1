@@ -237,15 +237,22 @@ if globals_dict['get_transcription_engine_value']('Azure Cloud Whisper') != glob
     raise RuntimeError('self-test transcription engine resolver failed')
 app = globals_dict['CatAudioCutterApp']()
 app.root.update_idletasks()
-if app.cut_button.cget('text') != '\u05d4\u05e4\u05e2\u05dc':
-    raise RuntimeError('self-test UI did not create the neutral run button')
+if not hasattr(app, 'transcribe_button') or not app.transcribe_button.winfo_exists():
+    raise RuntimeError('self-test UI did not create the transcribe action card')
+if not hasattr(app, 'player_progress_bar') or not app.player_progress_bar.winfo_exists():
+    raise RuntimeError('self-test UI did not create the audio player')
+if app.settings_notebook.index('end') < 4:
+    raise RuntimeError('self-test UI did not create the settings tabs')
 app.transcription_engine_var.set('Azure Cloud Whisper')
+app.transcription_mode_var.set(globals_dict['TRANSCRIPTION_LOCAL'])
+app.settings_notebook.select(2)
+app.toggle_transcription_settings()
 app.toggle_transcription_engine_settings()
 app.root.update_idletasks()
 local_model_state = app.local_model_combo.cget('state')
 if local_model_state != 'disabled' and not app.local_model_combo.instate(['disabled']):
     raise RuntimeError('self-test UI did not disable the local model selector for Azure engine: ' + str(local_model_state))
-if not app.azure_openai_frame.winfo_ismapped():
+if not app.azure_openai_frame.winfo_manager():
     raise RuntimeError('self-test UI did not show Azure settings for Azure engine')
 app.azure_endpoint_var.set('https://example-resource.openai.azure.com')
 app.azure_deployment_var.set('whisper')
@@ -258,7 +265,7 @@ if len(azure_form_configs) != 2 or azure_form_configs[1]['api_key'] != 'azure-ke
 app.transcription_engine_var.set('Local Whisper - \u05d1\u05de\u05d7\u05e9\u05d1')
 app.toggle_transcription_engine_settings()
 app.root.update_idletasks()
-if app.azure_openai_frame.winfo_ismapped():
+if app.azure_openai_frame.winfo_manager():
     raise RuntimeError('self-test UI did not hide Azure settings for local engine')
 app.root.destroy()
 shutil.rmtree(test_root, ignore_errors=True)

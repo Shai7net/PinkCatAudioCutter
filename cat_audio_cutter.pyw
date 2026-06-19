@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import ctypes
 import json
 import mimetypes
 import uuid
@@ -15,7 +16,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import pyautogui
 import pyperclip
@@ -46,6 +47,10 @@ CARD = "#f2ddea"
 STRONG_PINK = "#c73b7f"
 DARK_PINK = "#8f2f62"
 TEXT = "#44213a"
+SOFT_PINK = "#ffd7e9"
+LIGHT_PANEL = "#fff6fb"
+TEAL = "#95d8e6"
+ACTION_SHADOW = "#ead9e3"
 
 EMPOWERING_MESSAGES = [
     "את חזקה, חכמה, ומסוגלת לכל מה שבא לך.",
@@ -520,6 +525,13 @@ def format_seconds(seconds: float) -> str:
     minutes = int((total_seconds % 3600) // 60)
     secs = total_seconds % 60
     return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+
+
+def format_player_time(milliseconds: int) -> str:
+    total_seconds = max(0, int(milliseconds or 0) // 1000)
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 def parse_ranges_input(ranges_text: str):
@@ -1712,6 +1724,80 @@ def automate_whatsapp_send_to_bot(file_paths, intro_message: str = ""):
         time.sleep(3.2)
         pyautogui.press("enter")
 
+class AudioPreviewPlayer:
+    def __init__(self):
+        self.alias = f"pinkcat_preview_{os.getpid()}"
+        self.path = ""
+        self.is_open = False
+
+    def _send(self, command: str, return_length: int = 0) -> str:
+        if not hasattr(ctypes, "windll"):
+            raise RuntimeError("נגן פנימי זמין כרגע רק ב-Windows.")
+        buffer = ctypes.create_unicode_buffer(return_length or 1)
+        result = ctypes.windll.winmm.mciSendStringW(command, buffer, return_length, None)
+        if result:
+            error_buffer = ctypes.create_unicode_buffer(256)
+            ctypes.windll.winmm.mciGetErrorStringW(result, error_buffer, 256)
+            raise RuntimeError(error_buffer.value or f"MCI error {result}")
+        return buffer.value if return_length else ""
+
+    def open(self, audio_path: str):
+        self.close()
+        if not audio_path or not os.path.exists(audio_path):
+            raise FileNotFoundError("קובץ האודיו לא נמצא.")
+        self.path = audio_path
+        quoted_path = audio_path.replace('"', "")
+        self._send(f'open "{quoted_path}" alias {self.alias}')
+        self.is_open = True
+        try:
+            self._send(f"set {self.alias} time format milliseconds")
+        except RuntimeError:
+            pass
+
+    def close(self):
+        if self.is_open:
+            try:
+                self._send(f"close {self.alias}")
+            except RuntimeError:
+                pass
+        self.is_open = False
+        self.path = ""
+
+    def play(self):
+        if not self.is_open:
+            raise RuntimeError("לא נטען קובץ לנגן.")
+        self._send(f"play {self.alias}")
+
+    def pause(self):
+        if self.is_open:
+            self._send(f"pause {self.alias}")
+
+    def stop(self):
+        if self.is_open:
+            self._send(f"stop {self.alias}")
+            try:
+                self._send(f"seek {self.alias} to start")
+            except RuntimeError:
+                pass
+
+    def status(self) -> str:
+        if not self.is_open:
+            return "closed"
+        return self._send(f"status {self.alias} mode", 64).strip().lower()
+
+    def length(self) -> int:
+        if not self.is_open:
+            return 0
+        value = self._send(f"status {self.alias} length", 64).strip()
+        return int(value) if value.isdigit() else 0
+
+    def position(self) -> int:
+        if not self.is_open:
+            return 0
+        value = self._send(f"status {self.alias} position", 64).strip()
+        return int(value) if value.isdigit() else 0
+
+
 class ResultDialog(tk.Toplevel):
     def __init__(self, master, folder_path, transcript_path=None):
         super().__init__(master)
@@ -1817,8 +1903,15 @@ class CatAudioCutterApp:
         self.empowering_messages_enabled_var = tk.BooleanVar(value=setting("empowering_messages_enabled", True))
         self.status_var = tk.StringVar(value="מחכה לקובץ שמע")
         self.progress_var = tk.DoubleVar(value=0)
+        self.selected_file_label_var = tk.StringVar(value="לא נבחר קובץ")
+        self.player_progress_var = tk.DoubleVar(value=0)
+        self.player_time_var = tk.StringVar(value="00:00 / 00:00")
+        self.player_status_var = tk.StringVar(value="בחרי קובץ כדי להאזין מתוך האפליקציה")
 
         self.temp_dir = None
+        self.audio_player = AudioPreviewPlayer()
+        self.audio_player_path = ""
+        self.audio_player_update_job = None
         self.random_message_job = None
         self.last_saved_dir = None
         self.last_output_files = []
@@ -1855,6 +1948,15 @@ class CatAudioCutterApp:
         style.theme_use("clam")
         style.configure("Pink.TButton", font=("Segoe UI", 11, "bold"), padding=8)
         style.configure("Compact.TButton", font=("Segoe UI", 9, "bold"), padding=5)
+        style.configure("Soft.TNotebook", background=PANEL, borderwidth=0)
+        style.configure(
+            "Soft.TNotebook.Tab",
+            font=("Segoe UI", 10, "bold"),
+            padding=(12, 8),
+            background=SOFT_PINK,
+            foreground=TEXT,
+        )
+        style.map("Soft.TNotebook.Tab", background=[("selected", "white")], foreground=[("selected", DARK_PINK)])
         style.configure(
             "Pink.Horizontal.TProgressbar",
             troughcolor="#ffe8f2",
@@ -1876,56 +1978,222 @@ class CatAudioCutterApp:
         shell = tk.Frame(self.root, bg=BG)
         shell.pack(fill="both", expand=True)
 
-        self.history_panel = tk.Frame(shell, bg=PANEL, width=270, padx=12, pady=16)
-        self.history_panel.pack(side="right", fill="y")
-        self.history_panel.pack_propagate(False)
-        self.build_history_panel(self.history_panel)
+        self.settings_panel = tk.Frame(shell, bg=PANEL, width=360, padx=12, pady=16)
+        self.settings_panel.pack(side="left", fill="y")
+        self.settings_panel.pack_propagate(False)
+        self.build_settings_panel(self.settings_panel)
 
         self.main_canvas = tk.Canvas(shell, bg=BG, highlightthickness=0)
         self.main_scrollbar = ttk.Scrollbar(shell, orient="vertical", command=self.main_canvas.yview)
         self.main_canvas.configure(yscrollcommand=self.main_scrollbar.set)
-        self.main_canvas.pack(side="left", fill="both", expand=True)
+        self.main_canvas.pack(side="right", fill="both", expand=True)
         self.main_scrollbar.pack(side="right", fill="y")
 
-        outer = tk.Frame(self.main_canvas, bg=BG, padx=24, pady=20)
+        outer = tk.Frame(self.main_canvas, bg=BG, padx=30, pady=26)
         self.canvas_window_id = self.main_canvas.create_window((0, 0), window=outer, anchor="nw")
         outer.bind("<Configure>", self.on_content_configure)
         self.main_canvas.bind("<Configure>", self.on_canvas_configure)
         self.main_canvas.bind_all("<MouseWheel>", self.on_mousewheel)
 
-        self.quick_scroll_button = ttk.Button(self.root, text="⬇", width=3, command=self.scroll_to_actions, style="Pink.TButton")
+        self.quick_scroll_button = ttk.Button(self.root, text="↓", width=3, command=self.scroll_to_actions, style="Pink.TButton")
+        self.build_main_action_panel(outer)
 
-        header_row = tk.Frame(outer, bg=BG)
-        header_row.pack(fill="x", pady=(0, 6))
-
+    def build_settings_panel(self, parent):
         tk.Label(
-            header_row,
-            text="Pink Cat Audio Studio",
-            bg=BG,
+            parent,
+            text="הגדרות",
+            bg=PANEL,
             fg=DARK_PINK,
-            font=("Segoe UI", 23, "bold"),
-        ).pack(side="left")
+            font=("Segoe UI", 20, "bold"),
+        ).pack(anchor="e", pady=(0, 4))
+        tk.Label(
+            parent,
+            text="כל מה שלא צריך לגעת בו בכל פעולה נמצא כאן בטאבים.",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 9),
+            wraplength=310,
+            justify="right",
+        ).pack(anchor="e", pady=(0, 12))
 
-        ttk.Button(header_row, text="⬇ לאזור ההפעלה", command=self.scroll_to_actions, style="Pink.TButton").pack(side="right")
+        self.settings_notebook = ttk.Notebook(parent, style="Soft.TNotebook")
+        self.settings_notebook.pack(fill="both", expand=True)
+
+        general_tab = tk.Frame(self.settings_notebook, bg=PANEL, padx=8, pady=10)
+        split_tab = tk.Frame(self.settings_notebook, bg=PANEL, padx=8, pady=10)
+        transcription_tab = tk.Frame(self.settings_notebook, bg=PANEL, padx=8, pady=10)
+        history_tab = tk.Frame(self.settings_notebook, bg=PANEL, padx=8, pady=10)
+
+        self.settings_notebook.add(general_tab, text="כללי")
+        self.settings_notebook.add(split_tab, text="חיתוך")
+        self.settings_notebook.add(transcription_tab, text="תמלול")
+        self.settings_notebook.add(history_tab, text="היסטוריה")
+
+        self.build_save_section(general_tab)
+        self.build_split_section(split_tab)
+        self.build_options_section(transcription_tab)
+        self.build_history_panel(history_tab)
+
+    def build_main_action_panel(self, parent):
+        header = tk.Frame(parent, bg=BG)
+        header.pack(fill="x", pady=(0, 22))
 
         tk.Label(
-            outer,
-            text="חיתוך, תמלול, תיקון טקסט, סיכום מקצועי ושמירת היסטוריית שיחות במקום אחד.",
+            header,
+            text="תמלול אודיו",
+            bg=BG,
+            fg="#df255c",
+            font=("Segoe UI", 42, "bold"),
+        ).pack(anchor="e")
+        tk.Label(
+            header,
+            text="בחרי פעולה",
             bg=BG,
             fg=TEXT,
-            font=("Segoe UI", 11),
-            wraplength=760,
-            justify="center",
-        ).pack(anchor="center", pady=(0, 18))
+            font=("Segoe UI", 19, "bold"),
+        ).pack(anchor="e")
 
-        card = tk.Frame(outer, bg=PANEL, bd=0, highlightthickness=0, padx=22, pady=20)
-        card.pack(fill="both", expand=True)
+        actions = tk.Frame(parent, bg=BG)
+        actions.pack(fill="both", expand=True)
 
-        self.build_file_section(card)
-        self.build_split_section(card)
-        self.build_save_section(card)
-        self.build_options_section(card)
-        self.build_status_section(card)
+        self.upload_action_button = self.build_action_card(
+            actions,
+            title="העלאת קובץ",
+            subtitle="בחרי את קובץ האודיו לתמלול",
+            button_color=SOFT_PINK,
+            command=self.pick_audio_file,
+        )
+        self.build_audio_player_section(actions)
+        self.cut_audio_button = self.build_action_card(
+            actions,
+            title="חיתוך אודיו",
+            subtitle="חיתוך מהיר למספר חלקים שתבחרי",
+            button_color=SOFT_PINK,
+            command=self.start_cut_audio_only,
+        )
+        self.transcribe_button = self.build_action_card(
+            actions,
+            title="תמלל",
+            subtitle="תמלול לפי ההגדרות שבטאבים",
+            button_color=TEAL,
+            command=self.start_transcribe_audio_now,
+        )
+        self.cut_button = self.transcribe_button
+        self.build_status_section(actions)
+
+    def bind_click_recursive(self, widget, command):
+        widget.configure(cursor="hand2")
+        widget.bind("<Button-1>", lambda _event: command())
+        for child in widget.winfo_children():
+            self.bind_click_recursive(child, command)
+
+    def build_action_card(self, parent, title: str, subtitle: str, button_color: str, command):
+        shadow = tk.Frame(parent, bg=ACTION_SHADOW)
+        shadow.pack(fill="x", padx=(10, 0), pady=(0, 20))
+
+        card = tk.Frame(
+            shadow,
+            bg="white",
+            height=210,
+            highlightthickness=3,
+            highlightbackground="#ff9ec9",
+            highlightcolor="#ff9ec9",
+            padx=22,
+            pady=18,
+        )
+        card.pack(fill="x", padx=(0, 10), pady=(0, 10))
+        card.pack_propagate(False)
+
+        tk.Label(
+            card,
+            text="♪",
+            bg="white",
+            fg="#e87aa9",
+            font=("Segoe UI", 46, "bold"),
+        ).pack(anchor="center", pady=(2, 0))
+        tk.Label(
+            card,
+            text=subtitle,
+            bg="white",
+            fg=TEXT,
+            font=("Segoe UI", 10),
+        ).pack(anchor="center", pady=(0, 12))
+
+        label_shell = tk.Frame(
+            card,
+            bg=button_color,
+            highlightthickness=2,
+            highlightbackground="#ff9ec9",
+            padx=22,
+            pady=4,
+        )
+        label_shell.pack(anchor="center", fill="x", padx=90, pady=(0, 4))
+        tk.Label(
+            label_shell,
+            text=title,
+            bg=button_color,
+            fg="#df255c",
+            font=("Segoe UI", 28, "bold"),
+        ).pack(anchor="center")
+
+        self.bind_click_recursive(card, command)
+        return card
+
+    def build_audio_player_section(self, parent):
+        player = tk.Frame(parent, bg="white", padx=18, pady=12)
+        player.pack(fill="x", pady=(0, 22))
+
+        self.player_play_button = ttk.Button(
+            player,
+            text="▶",
+            command=self.toggle_audio_preview,
+            width=4,
+            style="Pink.TButton",
+        )
+        self.player_play_button.pack(side="left", padx=(0, 10))
+        ttk.Button(
+            player,
+            text="■",
+            command=self.stop_audio_preview,
+            width=4,
+            style="Compact.TButton",
+        ).pack(side="left", padx=(0, 10))
+
+        meter = tk.Frame(player, bg="white")
+        meter.pack(side="left", fill="x", expand=True)
+        self.player_progress_bar = ttk.Progressbar(
+            meter,
+            variable=self.player_progress_var,
+            maximum=100,
+            style="Pink.Horizontal.TProgressbar",
+        )
+        self.player_progress_bar.pack(fill="x", pady=(0, 5))
+        info_row = tk.Frame(meter, bg="white")
+        info_row.pack(fill="x")
+        tk.Label(
+            info_row,
+            textvariable=self.selected_file_label_var,
+            bg="white",
+            fg=TEXT,
+            font=("Segoe UI", 9, "bold"),
+            anchor="e",
+        ).pack(side="right", fill="x", expand=True)
+        tk.Label(
+            info_row,
+            textvariable=self.player_time_var,
+            bg="white",
+            fg=TEXT,
+            font=("Segoe UI", 9),
+        ).pack(side="left")
+        tk.Label(
+            player,
+            textvariable=self.player_status_var,
+            bg="white",
+            fg=DARK_PINK,
+            font=("Segoe UI", 9),
+            wraplength=220,
+            justify="right",
+        ).pack(side="right", padx=(12, 0))
 
     def build_history_panel(self, parent):
         tk.Label(
@@ -2402,7 +2670,7 @@ class CatAudioCutterApp:
         external_grid.columnconfigure(1, weight=1)
         tk.Label(
             self.external_transcription_frame,
-            text="ה-API לא מקבל אודיו. הכלי מתמלל מקומית, ואז שולח רק את טקסט התמלול לתיקון, ניקוי ג'יבריש וסיכום. אפשר לשמור כמה מפתחות לכל ספק, מפתח אחד בכל שורה; אם מפתח נחסם או נגמר לו quota, הכלי ינסה את הבא.",
+            text="ספק תיקון הטקסט לא מקבל אודיו. אחרי שלב התמלול הכלי שולח רק את הטקסט לניקוי ג'יבריש, תחביר וסיכום. אפשר לשמור כמה מפתחות לכל ספק, מפתח אחד בכל שורה; אם מפתח נחסם או נגמר לו quota, הכלי ינסה את הבא.",
             bg=CARD,
             fg=TEXT,
             font=("Segoe UI", 9),
@@ -2433,11 +2701,13 @@ class CatAudioCutterApp:
         ).pack(anchor="w")
 
     def build_status_section(self, parent):
-        self.action_anchor = tk.Frame(parent, bg=PANEL, height=1)
+        self.action_anchor = tk.Frame(parent, bg=BG, height=1)
         self.action_anchor.pack(fill="x")
 
+        status_card = tk.Frame(parent, bg=PANEL, padx=18, pady=16)
+        status_card.pack(fill="x", pady=(0, 18))
         self.progress_bar = ttk.Progressbar(
-            parent,
+            status_card,
             variable=self.progress_var,
             maximum=100,
             style="Pink.Horizontal.TProgressbar",
@@ -2446,7 +2716,7 @@ class CatAudioCutterApp:
 
         self.processing_label_var = tk.StringVar(value="")
         self.processing_label = tk.Label(
-            parent,
+            status_card,
             textvariable=self.processing_label_var,
             bg=PANEL,
             fg=DARK_PINK,
@@ -2455,7 +2725,7 @@ class CatAudioCutterApp:
         self.processing_label.pack(anchor="w", pady=(0, 6))
 
         tk.Label(
-            parent,
+            status_card,
             textvariable=self.status_var,
             bg=PANEL,
             fg=TEXT,
@@ -2464,22 +2734,20 @@ class CatAudioCutterApp:
             justify="left",
         ).pack(anchor="w", pady=(0, 18))
 
-        action_row = tk.Frame(parent, bg=PANEL)
+        action_row = tk.Frame(status_card, bg=PANEL)
         action_row.pack(fill="x")
         self.action_row = action_row
 
-        self.cut_button = ttk.Button(action_row, text="הפעל", command=self.start_processing, style="Pink.TButton")
-        self.cut_button.pack(side="left")
         self.open_folder_button = ttk.Button(
-            action_row, text="📁 פתחי תיקיית שמירה", command=self.open_output_folder, style="Pink.TButton"
+            action_row, text="פתחי תיקיית שמירה", command=self.open_output_folder, style="Compact.TButton"
         )
-        self.open_folder_button.pack(side="left", padx=10)
+        self.open_folder_button.pack(side="left", padx=(0, 8))
         self.message_button = ttk.Button(
-            action_row, text="הודעה מעצימה", command=self.show_random_message, style="Pink.TButton"
+            action_row, text="הודעה מעצימה", command=self.show_random_message, style="Compact.TButton"
         )
         self.message_button.pack(side="left", padx=10)
         tk.Checkbutton(
-            parent,
+            status_card,
             text="להציג הודעות מעצימות אוטומטיות",
             variable=self.empowering_messages_enabled_var,
             command=self.toggle_random_messages,
@@ -2490,25 +2758,6 @@ class CatAudioCutterApp:
             selectcolor="#fff6fb",
             font=("Segoe UI", 9, "bold"),
         ).pack(anchor="w", pady=(12, 0))
-
-        hint = tk.Frame(parent, bg=CARD, padx=14, pady=12)
-        hint.pack(fill="x", pady=(24, 0))
-
-        tk.Label(
-            hint,
-            text=(
-                "🐱 אחרי הסיום הקבצים יישמרו אוטומטית לתיקייה שבחרת. במצב תמלול יישמר גם קובץ TXT לכל מקטע "
-                "וקובץ תמלול מאוחד.\n"
-                "אפשר לעבוד גם בלי חיתוך: בטלי את סימון החיתוך והכלי יתמלל את הקובץ כיחידה אחת.\n"
-                "ברירת המחדל היא MP3. "
-                "אם בחרת WAV, קצב הסיביות אינו רלוונטי ויישמר כ-audio לא דחוס."
-            ),
-            bg=CARD,
-            fg=TEXT,
-            font=("Segoe UI", 10),
-            justify="left",
-            wraplength=700,
-        ).pack(anchor="w")
 
     def apply_loaded_text_settings(self):
         if hasattr(self, "times_text"):
@@ -2703,15 +2952,98 @@ class CatAudioCutterApp:
         self.refresh_history_panel()
 
     def pick_audio_file(self):
+        if self.is_processing:
+            messagebox.showinfo("קובץ שמע", "אי אפשר להחליף קובץ בזמן שהתוכנה עובדת על פעולה.")
+            return
         file_path = filedialog.askopenfilename(
             title="בחרי קובץ שמע",
             filetypes=[("Audio files", "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"), ("All files", "*.*")],
         )
         if file_path:
             self.audio_path_var.set(file_path)
+            self.reset_audio_preview(file_path)
             if not self.save_dir_var.get().strip():
                 self.save_dir_var.set(str(Path(file_path).parent))
             self.set_status("קובץ נבחר בהצלחה. מוכנה להפעלה 💗")
+
+    def reset_audio_preview(self, file_path: str = ""):
+        self.stop_audio_preview(close_player=True)
+        self.audio_player_path = ""
+        self.player_progress_var.set(0)
+        self.player_time_var.set("00:00 / 00:00")
+        if file_path:
+            self.selected_file_label_var.set(Path(file_path).name)
+            self.player_status_var.set("אפשר ללחוץ Play כדי לשמוע את הקובץ שנבחר")
+        else:
+            self.selected_file_label_var.set("לא נבחר קובץ")
+            self.player_status_var.set("בחרי קובץ כדי להאזין מתוך האפליקציה")
+
+    def ensure_audio_preview_loaded(self):
+        audio_path = self.audio_path_var.get().strip()
+        if not audio_path or not os.path.exists(audio_path):
+            raise RuntimeError("בחרי קודם קובץ שמע.")
+        if self.audio_player_path == audio_path and self.audio_player.is_open:
+            return
+        self.audio_player.open(audio_path)
+        self.audio_player_path = audio_path
+
+    def toggle_audio_preview(self):
+        try:
+            self.ensure_audio_preview_loaded()
+            mode = self.audio_player.status()
+            if mode == "playing":
+                self.audio_player.pause()
+                self.player_play_button.configure(text="▶")
+                self.player_status_var.set("ההשמעה מושהית")
+                return
+            self.audio_player.play()
+            self.player_play_button.configure(text="⏸")
+            self.player_status_var.set("משמיעה את הקובץ שנבחר")
+            self.schedule_audio_player_update()
+        except Exception as error:
+            self.player_status_var.set("לא הצלחתי להשמיע את הקובץ")
+            messagebox.showwarning("נגן אודיו", f"לא הצלחתי להשמיע את הקובץ מתוך האפליקציה.\n\n{error_details(error)}")
+
+    def schedule_audio_player_update(self):
+        if self.audio_player_update_job:
+            self.root.after_cancel(self.audio_player_update_job)
+        self.update_audio_player_progress()
+
+    def update_audio_player_progress(self):
+        self.audio_player_update_job = None
+        if not self.audio_player.is_open:
+            return
+        try:
+            length = self.audio_player.length()
+            position = self.audio_player.position()
+            if length > 0:
+                self.player_progress_var.set(max(0, min(100, (position / length) * 100)))
+                self.player_time_var.set(f"{format_player_time(position)} / {format_player_time(length)}")
+            mode = self.audio_player.status()
+            if mode == "playing":
+                self.audio_player_update_job = self.root.after(500, self.update_audio_player_progress)
+            else:
+                self.player_play_button.configure(text="▶")
+                if mode == "stopped" and length > 0 and position >= max(length - 500, 0):
+                    self.player_progress_var.set(0)
+                    self.player_time_var.set(f"00:00 / {format_player_time(length)}")
+        except Exception:
+            self.player_play_button.configure(text="▶")
+
+    def stop_audio_preview(self, close_player: bool = False):
+        if self.audio_player_update_job:
+            self.root.after_cancel(self.audio_player_update_job)
+            self.audio_player_update_job = None
+        try:
+            if close_player:
+                self.audio_player.close()
+            else:
+                self.audio_player.stop()
+        except Exception:
+            pass
+        if hasattr(self, "player_play_button"):
+            self.player_play_button.configure(text="▶")
+        self.player_progress_var.set(0)
 
     def pick_save_dir(self):
         folder = filedialog.askdirectory(title="בחרי תיקיית שמירה")
@@ -2972,8 +3304,20 @@ class CatAudioCutterApp:
 
     def set_processing_state(self, is_processing: bool):
         self.is_processing = is_processing
-        self.cut_button.configure(state="disabled" if is_processing else "normal")
-        self.message_button.configure(state="disabled" if is_processing else "normal")
+        new_state = "disabled" if is_processing else "normal"
+        for button_name in (
+            "cut_button",
+            "transcribe_button",
+            "cut_audio_button",
+            "upload_action_button",
+            "message_button",
+        ):
+            button = getattr(self, button_name, None)
+            if button is not None:
+                try:
+                    button.configure(state=new_state)
+                except tk.TclError:
+                    pass
         if is_processing:
             self.progress_bar.configure(mode="indeterminate")
             self.progress_bar.start(10)
@@ -3150,13 +3494,14 @@ class CatAudioCutterApp:
         os.makedirs(target_dir, exist_ok=False)
         return target_dir
 
-    def validate_inputs(self):
+    def validate_inputs(self, overrides=None):
+        overrides = overrides or {}
         audio_path = self.audio_path_var.get().strip()
         if not audio_path or not os.path.exists(audio_path):
             raise ValueError("בחרי קודם קובץ שמע תקין.")
 
-        cut_audio = self.cut_audio_var.get()
-        split_mode = self.split_mode_var.get()
+        cut_audio = overrides.get("cut_audio", self.cut_audio_var.get())
+        split_mode = overrides.get("split_mode", self.split_mode_var.get())
         segments_count = 0
         ranges_text = ""
 
@@ -3164,32 +3509,35 @@ class CatAudioCutterApp:
             segments_count = 1
         elif split_mode == "count":
             try:
-                segments_count = int(self.segments_var.get().strip())
+                segments_count = int(str(overrides.get("segments_count", self.segments_var.get().strip())).strip())
             except ValueError as error:
                 raise ValueError("כתבי מספר שלם כמו 2 או 10.") from error
         else:
-            ranges_text = self.times_text.get("1.0", "end").strip()
+            ranges_text = overrides.get("ranges_text", self.times_text.get("1.0", "end").strip())
             self.time_ranges_var.set(ranges_text)
 
-        output_format = self.output_format_var.get().strip().lower()
+        output_format = str(overrides.get("output_format", self.output_format_var.get().strip())).strip().lower()
         if output_format not in {"mp3", "wav", "ogg"}:
             raise ValueError("בחרי פורמט פלט תקין.")
 
-        bitrate = self.bitrate_var.get().strip()
+        bitrate = str(overrides.get("bitrate", self.bitrate_var.get().strip())).strip()
         if output_format in {"mp3", "ogg"} and bitrate not in BITRATE_OPTIONS:
             raise ValueError("בחרי קצב סיביות תקין.")
 
-        sample_rate = self.sample_rate_var.get().strip()
+        sample_rate = str(overrides.get("sample_rate", self.sample_rate_var.get().strip())).strip()
         if sample_rate not in SAMPLE_RATE_OPTIONS:
             raise ValueError("בחרי קצב דגימה תקין.")
         if output_format == "ogg":
             sample_rate = DEFAULT_OGG_SAMPLE_RATE
 
-        transcription_mode = self.transcription_mode_var.get()
+        transcription_mode = overrides.get("transcription_mode", self.transcription_mode_var.get())
         if transcription_mode not in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL, TRANSCRIPTION_WHATSAPP, TRANSCRIPTION_NONE}:
             raise ValueError("בחרי מצב תמלול תקין.")
 
-        transcription_engine = get_transcription_engine_value(self.transcription_engine_var.get())
+        transcription_engine = overrides.get(
+            "transcription_engine",
+            get_transcription_engine_value(self.transcription_engine_var.get()),
+        )
         if transcription_engine not in {TRANSCRIPTION_ENGINE_LOCAL, TRANSCRIPTION_ENGINE_AZURE_OPENAI}:
             raise ValueError("בחרי מנוע תמלול תקין.")
 
@@ -3290,16 +3638,47 @@ class CatAudioCutterApp:
             "text_api_keys": text_api_keys,
         }
 
-    def start_processing(self):
+    def start_transcribe_audio_now(self):
+        self.start_processing()
+
+    def start_cut_audio_only(self):
+        if self.is_processing:
+            return
+        if not self.audio_path_var.get().strip():
+            self.pick_audio_file()
+        if not self.audio_path_var.get().strip():
+            return
+        parts_count = simpledialog.askinteger(
+            "חיתוך אודיו",
+            "לכמה חלקים לחתוך את הקובץ?",
+            initialvalue=max(2, int(self.segments_var.get() or 2) if str(self.segments_var.get()).isdigit() else 2),
+            minvalue=2,
+            maxvalue=200,
+            parent=self.root,
+        )
+        if not parts_count:
+            return
+        self.start_processing(
+            overrides={
+                "cut_audio": True,
+                "split_mode": "count",
+                "segments_count": parts_count,
+                "transcription_mode": TRANSCRIPTION_NONE,
+            },
+            save_settings=False,
+        )
+
+    def start_processing(self, overrides=None, save_settings=True):
         if self.is_processing:
             return
         try:
-            settings = self.validate_inputs()
+            settings = self.validate_inputs(overrides)
         except Exception as error:
             messagebox.showerror("בדקי את ההגדרות", str(error))
             return
 
-        self.save_current_settings()
+        if save_settings:
+            self.save_current_settings()
         self.cleanup_temp_dir()
         self.temp_dir = tempfile.mkdtemp(prefix="cat_audio_cutter_")
         self.last_saved_dir = settings["output_dir"]
@@ -3728,6 +4107,7 @@ class CatAudioCutterApp:
 
     def on_close(self):
         self.save_current_settings()
+        self.stop_audio_preview(close_player=True)
         self.cleanup_temp_dir()
         self.root.destroy()
 
