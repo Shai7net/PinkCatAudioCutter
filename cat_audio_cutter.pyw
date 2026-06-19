@@ -7,7 +7,6 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-import base64
 import json
 import mimetypes
 import uuid
@@ -82,20 +81,17 @@ EXTERNAL_PROVIDER_OPENAI = "openai"
 EXTERNAL_PROVIDER_GEMINI = "gemini"
 EXTERNAL_PROVIDER_OPENROUTER = "openrouter"
 EXTERNAL_PROVIDER_OPTIONS = {
-    "OpenAI / Whisper compatible": EXTERNAL_PROVIDER_OPENAI,
+    "OpenAI-compatible text API": EXTERNAL_PROVIDER_OPENAI,
     "Google Gemini": EXTERNAL_PROVIDER_GEMINI,
     "OpenRouter": EXTERNAL_PROVIDER_OPENROUTER,
 }
-DEFAULT_EXTERNAL_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
-DEFAULT_EXTERNAL_TRANSCRIPTION_MODEL = "whisper-1"
+DEFAULT_EXTERNAL_TRANSCRIPTION_URL = "https://api.openai.com/v1/chat/completions"
+DEFAULT_EXTERNAL_TRANSCRIPTION_MODEL = "gpt-4o-mini"
 DEFAULT_GEMINI_TRANSCRIPTION_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
 DEFAULT_GEMINI_TRANSCRIPTION_MODEL = "gemini-flash-latest"
-DEFAULT_OPENROUTER_TRANSCRIPTION_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
-DEFAULT_OPENROUTER_TRANSCRIPTION_MODEL = "openai/whisper-large-v3"
 DEFAULT_OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_TEXT_MODEL = "openrouter/auto"
 EXTERNAL_TRANSCRIPTION_TIMEOUT_SECONDS = 1800
-GEMINI_INLINE_AUDIO_MAX_BYTES = 18 * 1024 * 1024
 GEMINI_RETRY_DELAYS_SECONDS = [8, 18, 35]
 API_KEY_FAILOVER_STATUS_CODES = {401, 402, 403, 429, 500, 502, 503, 504}
 GEMINI_API_KEY_FILE_NAME = "gemini_api_key.txt"
@@ -105,9 +101,12 @@ SETTINGS_FILE_NAME = "cat_audio_cutter_settings.json"
 HISTORY_FILE_NAME = "cat_audio_cutter_history.json"
 HISTORY_LIMIT = 25
 GEMINI_TEXT_FIX_PROMPT = (
-    "תקן את התמלול הבא בעברית. שמור על המשמעות המקורית, אל תוסיף מידע שלא נאמר, "
-    "תקן מילים משובשות, פיסוק, תחביר וחלוקה למשפטים. "
-    "החזר רק את הטקסט המתוקן, בלי כותרות ובלי הסברים."
+    "אתה מקבל תמלול גולמי בעברית שנוצר ממודל זיהוי דיבור מקומי, ולעיתים יש בו ג'יבריש, "
+    "מילים שנשמעו דומה אך זוהו לא נכון, פיסוק חסר ותחביר שבור. "
+    "שחזר ממנו תמלול עברי ברור, טבעי ומקצועי ככל האפשר לפי ההקשר. "
+    "שמור על המשמעות והדברים שנאמרו, אל תמציא מידע חדש, ואל תוסיף הסברים חיצוניים. "
+    "תקן מילים משובשות, תחביר, פיסוק וחלוקה לפסקאות. אם יש ספק, העדף ניסוח שמרני. "
+    "החזר רק את התמלול המתוקן, בלי כותרות ובלי הסברים."
 )
 GEMINI_SUMMARY_PROMPT = (
     "כתוב סיכום מקצועי, ברור ותמציתי של השיחה לפי התמלול הבא. "
@@ -302,6 +301,69 @@ def resolve_runtime_binary(name: str) -> str:
         if candidate and os.path.exists(candidate):
             return candidate
     return name
+
+
+def resolve_bundled_certifi_path() -> str:
+    config_dir = get_app_config_dir()
+    runtime_home = os.environ.get("PYTHONHOME", "")
+    parent_dir = os.path.dirname(config_dir)
+    candidates = [
+        os.path.join(runtime_home, "certifi", "cacert.pem") if runtime_home else "",
+        os.path.join(get_runtime_base_dir(), "certifi", "cacert.pem"),
+        os.path.join(get_runtime_base_dir(), "_internal", "certifi", "cacert.pem"),
+        os.path.join(config_dir, "dist", "PinkCatAudioCutter", "_internal", "certifi", "cacert.pem"),
+        os.path.join(config_dir, "release", "PinkCatAudioCutter", "_internal", "certifi", "cacert.pem"),
+        os.path.join(config_dir, "PinkCatAudioCutter", "_internal", "certifi", "cacert.pem"),
+        os.path.join(parent_dir, "PinkCatAudioCutter", "_internal", "certifi", "cacert.pem"),
+        os.path.join(os.path.dirname(sys.executable), "certifi", "cacert.pem") if getattr(sys, "frozen", False) else "",
+        os.path.join(os.path.dirname(sys.executable), "_internal", "certifi", "cacert.pem") if getattr(sys, "frozen", False) else "",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def configure_certifi_for_bundled_runtime():
+    cacert_path = resolve_bundled_certifi_path()
+    if not cacert_path:
+        return
+    os.environ.setdefault("SSL_CERT_FILE", cacert_path)
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", cacert_path)
+    try:
+        import certifi
+        import certifi.core
+
+        certifi.where = lambda: cacert_path
+        certifi.core.where = lambda: cacert_path
+    except Exception:
+        pass
+
+
+def configure_huggingface_cache():
+    local_cache_root = os.path.join(get_app_config_dir(), "model_cache", "huggingface")
+    local_hub_cache = os.path.join(local_cache_root, "hub")
+
+    def cache_path_is_usable(path: str) -> bool:
+        if not path:
+            return False
+        drive, _tail = os.path.splitdrive(os.path.abspath(path))
+        if drive and not os.path.exists(drive + os.sep):
+            return False
+        try:
+            os.makedirs(path, exist_ok=True)
+            return os.path.isdir(path)
+        except OSError:
+            return False
+
+    current_home = os.environ.get("HF_HOME", "")
+    current_hub = os.environ.get("HF_HUB_CACHE", "")
+    if cache_path_is_usable(current_home or current_hub):
+        return
+
+    os.makedirs(local_hub_cache, exist_ok=True)
+    os.environ["HF_HOME"] = local_cache_root
+    os.environ["HF_HUB_CACHE"] = local_hub_cache
 
 
 def run_command(command, cwd=None):
@@ -645,6 +707,9 @@ def resolve_faster_whisper_repo_id(model_name: str):
 
 
 def ensure_faster_whisper_model(model_name: str, progress_callback):
+    configure_certifi_for_bundled_runtime()
+    configure_huggingface_cache()
+
     import huggingface_hub
     from tqdm.auto import tqdm
 
@@ -681,7 +746,7 @@ def ensure_faster_whisper_model(model_name: str, progress_callback):
             return max(0, min(100, (self.n / self.total) * 100))
 
         def _build_label(self):
-            desc = (self.desc or "מודל").strip()
+            desc = (getattr(self, "desc", "") or "מודל").strip()
             unit = str(getattr(self, "unit", "") or "").lower()
             is_byte_progress = unit.startswith("b") or (self.total and self.total > 1024 * 1024)
             if self.total:
@@ -987,62 +1052,6 @@ def extract_chat_completion_text(response_text: str) -> str:
     return extract_transcript_text(response_text)
 
 
-def build_gemini_transcription_payload(audio_path: str):
-    mime_type = mimetypes.guess_type(audio_path)[0] or "application/octet-stream"
-    if Path(audio_path).suffix.lower() == ".mp3":
-        mime_type = "audio/mp3"
-
-    with open(audio_path, "rb") as handle:
-        audio_b64 = base64.b64encode(handle.read()).decode("ascii")
-
-    return {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": (
-                            "תמלל את קובץ האודיו הבא בעברית. "
-                            "החזר רק את טקסט התמלול, בלי הסברים ובלי כותרות."
-                        )
-                    },
-                    {
-                        "inlineData": {
-                            "mimeType": mime_type,
-                            "data": audio_b64,
-                        }
-                    },
-                ],
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0,
-        },
-    }
-
-
-def get_audio_format_for_openrouter(audio_path: str) -> str:
-    suffix = Path(audio_path).suffix.lower().lstrip(".")
-    if suffix in {"wav", "mp3", "aiff", "aac", "ogg", "flac", "m4a", "pcm16", "pcm24"}:
-        return suffix
-    return "mp3"
-
-
-def build_openrouter_transcription_payload(audio_path: str, model_name: str):
-    with open(audio_path, "rb") as handle:
-        audio_b64 = base64.b64encode(handle.read()).decode("ascii")
-
-    return {
-        "input_audio": {
-            "data": audio_b64,
-            "format": get_audio_format_for_openrouter(audio_path),
-        },
-        "model": (model_name or DEFAULT_OPENROUTER_TRANSCRIPTION_MODEL).strip(),
-        "language": "he",
-        "temperature": 0,
-    }
-
-
 def build_openrouter_chat_payload(prompt_text: str, model_name: str):
     return {
         "model": (model_name or DEFAULT_OPENROUTER_TEXT_MODEL).strip(),
@@ -1103,41 +1112,6 @@ def build_gemini_generate_content_url(endpoint_url: str, model_name: str) -> str
     return clean_endpoint
 
 
-def prepare_audio_for_gemini_transcription(audio_path: str, working_dir: str, index: int):
-    if os.path.getsize(audio_path) <= GEMINI_INLINE_AUDIO_MAX_BYTES and Path(audio_path).suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}:
-        return audio_path
-
-    gemini_dir = os.path.join(working_dir, "gemini_audio")
-    os.makedirs(gemini_dir, exist_ok=True)
-    prepared_path = os.path.join(gemini_dir, f"gemini_{index:02d}.mp3")
-    run_command(
-        [
-            "ffmpeg",
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            audio_path,
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-acodec",
-            "libmp3lame",
-            "-b:a",
-            "48k",
-            prepared_path,
-        ]
-    )
-    if not os.path.exists(prepared_path) or os.path.getsize(prepared_path) == 0:
-        raise RuntimeError("לא נוצר קובץ MP3 זמני תקין לשליחה ל-Gemini.")
-    if os.path.getsize(prepared_path) > GEMINI_INLINE_AUDIO_MAX_BYTES:
-        raise RuntimeError("המקטע גדול מדי לשליחה ל-Gemini. חתכי למקטעים קצרים יותר או השתמשי בתמלול המקומי.")
-    return prepared_path
-
-
 def post_gemini_generate_content(endpoint_url: str, model_name: str, api_key: str, payload):
     if not api_key.strip():
         raise RuntimeError("ב-Gemini צריך API key.")
@@ -1187,16 +1161,6 @@ def post_openrouter_json(endpoint_url: str, api_key: str, payload):
         raise RuntimeError(f"לא הצלחתי להתחבר ל-OpenRouter: {error}") from error
 
 
-def transcribe_one_file_with_openrouter_api(audio_path: str, endpoint_url: str, model_name: str, api_key: str):
-    endpoint = endpoint_url.strip() or DEFAULT_OPENROUTER_TRANSCRIPTION_URL
-    raw_response = post_openrouter_json(
-        endpoint,
-        api_key,
-        build_openrouter_transcription_payload(audio_path, model_name),
-    )
-    return extract_transcript_text(raw_response)
-
-
 def complete_text_with_openrouter(prompt_text: str, model_name: str, api_key: str):
     raw_response = post_openrouter_json(
         DEFAULT_OPENROUTER_CHAT_URL,
@@ -1206,44 +1170,36 @@ def complete_text_with_openrouter(prompt_text: str, model_name: str, api_key: st
     return extract_chat_completion_text(raw_response)
 
 
-def transcribe_one_file_with_external_api(audio_path: str, endpoint_url: str, model_name: str, api_key: str):
-    fields = {
-        "model": model_name,
-        "language": "he",
-        "response_format": "json",
-        "temperature": "0",
-    }
-    body, content_type = encode_multipart_form(fields, "file", audio_path)
+def post_openai_compatible_chat(endpoint_url: str, api_key: str, payload):
+    endpoint = endpoint_url.strip() or DEFAULT_EXTERNAL_TRANSCRIPTION_URL
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {
-        "Content-Type": content_type,
+        "Content-Type": "application/json",
         "Accept": "application/json, text/plain",
     }
     if api_key.strip():
         headers["Authorization"] = f"Bearer {api_key.strip()}"
 
-    request = urllib.request.Request(endpoint_url, data=body, headers=headers, method="POST")
+    request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=EXTERNAL_TRANSCRIPTION_TIMEOUT_SECONDS) as response:
-            raw_response = response.read().decode("utf-8", errors="replace")
+            return response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as error:
         details = error.read().decode("utf-8", errors="replace")
         if error.code in {429, 500, 502, 503, 504}:
-            raise ExternalApiBusyError(f"שירות התמלול החיצוני עמוס כרגע. קוד {error.code}: {details[:700]}") from error
-        raise ExternalApiHttpError(f"שירות התמלול החיצוני החזיר שגיאה {error.code}: {details[:700]}", error.code) from error
+            raise ExternalApiBusyError(f"שירות הטקסט החיצוני עמוס כרגע. קוד {error.code}: {details[:700]}") from error
+        raise ExternalApiHttpError(f"שירות הטקסט החיצוני החזיר שגיאה {error.code}: {details[:700]}", error.code) from error
     except urllib.error.URLError as error:
-        raise RuntimeError(f"לא הצלחתי להתחבר לשירות התמלול החיצוני: {error}") from error
-
-    return extract_transcript_text(raw_response)
+        raise RuntimeError(f"לא הצלחתי להתחבר לשירות הטקסט החיצוני: {error}") from error
 
 
-def transcribe_one_file_with_gemini_api(audio_path: str, endpoint_url: str, model_name: str, api_key: str):
-    raw_response = post_gemini_generate_content(
+def complete_text_with_openai_compatible(prompt_text: str, endpoint_url: str, model_name: str, api_key: str):
+    raw_response = post_openai_compatible_chat(
         endpoint_url,
-        model_name,
         api_key,
-        build_gemini_transcription_payload(audio_path),
+        build_openrouter_chat_payload(prompt_text, model_name or DEFAULT_EXTERNAL_TRANSCRIPTION_MODEL),
     )
-    return extract_gemini_transcript_text(raw_response)
+    return extract_chat_completion_text(raw_response)
 
 
 def correct_transcript_text_with_gemini(transcript_text: str, endpoint_url: str, model_name: str, api_key: str, progress_callback):
@@ -1298,7 +1254,7 @@ def summarize_transcript_with_gemini(transcript_text: str, endpoint_url: str, mo
     return ""
 
 
-def correct_transcript_text_with_ai_provider(transcript_text: str, provider: str, text_model: str, api_keys, progress_callback):
+def correct_transcript_text_with_ai_provider(transcript_text: str, provider: str, endpoint_url: str, text_model: str, api_keys, progress_callback):
     if not transcript_text.strip():
         return ""
 
@@ -1309,6 +1265,15 @@ def correct_transcript_text_with_ai_provider(transcript_text: str, provider: str
             api_keys,
             "OpenRouter",
             lambda api_key: complete_text_with_openrouter(prompt, text_model, api_key),
+        )
+
+    if provider == EXTERNAL_PROVIDER_OPENAI:
+        prompt = f"{GEMINI_TEXT_FIX_PROMPT}\n\n--- תמלול לתיקון ---\n{transcript_text.strip()}"
+        progress_callback("שולחת את הטקסט לתיקון דרך API תואם OpenAI")
+        return call_with_api_key_pool(
+            api_keys,
+            "API תואם OpenAI",
+            lambda api_key: complete_text_with_openai_compatible(prompt, endpoint_url, text_model, api_key),
         )
 
     return call_with_api_key_pool(
@@ -1324,7 +1289,7 @@ def correct_transcript_text_with_ai_provider(transcript_text: str, provider: str
     )
 
 
-def summarize_transcript_with_ai_provider(transcript_text: str, provider: str, text_model: str, api_keys, progress_callback):
+def summarize_transcript_with_ai_provider(transcript_text: str, provider: str, endpoint_url: str, text_model: str, api_keys, progress_callback):
     if not transcript_text.strip():
         return ""
 
@@ -1335,6 +1300,15 @@ def summarize_transcript_with_ai_provider(transcript_text: str, provider: str, t
             api_keys,
             "OpenRouter",
             lambda api_key: complete_text_with_openrouter(prompt, text_model, api_key),
+        )
+
+    if provider == EXTERNAL_PROVIDER_OPENAI:
+        prompt = f"{GEMINI_SUMMARY_PROMPT}\n\n--- תמלול ---\n{transcript_text.strip()}"
+        progress_callback("שולחת את התמלול לסיכום מקצועי דרך API תואם OpenAI")
+        return call_with_api_key_pool(
+            api_keys,
+            "API תואם OpenAI",
+            lambda api_key: complete_text_with_openai_compatible(prompt, endpoint_url, text_model, api_key),
         )
 
     return call_with_api_key_pool(
@@ -1377,84 +1351,6 @@ def write_summary_transcript(output_dir: str, transcript_path: str, summary_text
     with open(target_path, "w", encoding="utf-8") as handle:
         handle.write(format_transcript_with_summary(summary_text, transcript_text))
     return summary_path, target_path
-
-
-def transcribe_audio_files_with_external_api(
-    audio_paths,
-    output_dir: str,
-    endpoint_url: str,
-    model_name: str,
-    api_keys,
-    provider: str,
-    progress_callback,
-    working_dir: str,
-):
-    transcript_files = []
-    combined_sections = []
-    total = len(audio_paths)
-
-    for index, audio_path in enumerate(audio_paths, start=1):
-        if provider == EXTERNAL_PROVIDER_GEMINI:
-            progress_callback(index, total, f"מכינה מקטע {index}/{total} ל-Gemini")
-            external_audio_path = prepare_audio_for_gemini_transcription(audio_path, working_dir, index)
-            text = None
-            total_attempts = len(GEMINI_RETRY_DELAYS_SECONDS) + 1
-            for attempt in range(1, total_attempts + 1):
-                try:
-                    progress_callback(index, total, f"שולחת מקטע {index}/{total} ל-Gemini - ניסיון {attempt}/{total_attempts}")
-                    text = call_with_api_key_pool(
-                        api_keys,
-                        "Gemini",
-                        lambda api_key, external_audio_path=external_audio_path: transcribe_one_file_with_gemini_api(
-                            external_audio_path,
-                            endpoint_url,
-                            model_name,
-                            api_key,
-                        ),
-                    )
-                    break
-                except ExternalApiBusyError:
-                    if attempt >= total_attempts:
-                        raise
-                    wait_seconds = GEMINI_RETRY_DELAYS_SECONDS[attempt - 1]
-                    for remaining in range(wait_seconds, 0, -1):
-                        progress_callback(
-                            index,
-                            total,
-                            f"Gemini עמוס כרגע. מנסה שוב בעוד {remaining} שניות",
-                        )
-                        time.sleep(1)
-        elif provider == EXTERNAL_PROVIDER_OPENROUTER:
-            progress_callback(index, total, f"שולחת מקטע {index}/{total} ל-OpenRouter")
-            text = call_with_api_key_pool(
-                api_keys,
-                "OpenRouter",
-                lambda api_key, audio_path=audio_path: transcribe_one_file_with_openrouter_api(
-                    audio_path,
-                    endpoint_url,
-                    model_name,
-                    api_key,
-                ),
-            )
-        else:
-            progress_callback(index, total, f"שולחת מקטע {index}/{total} למודל חיצוני")
-            text = call_with_api_key_pool(
-                api_keys,
-                "API חיצוני",
-                lambda api_key, audio_path=audio_path: transcribe_one_file_with_external_api(
-                    audio_path,
-                    endpoint_url,
-                    model_name,
-                    api_key,
-                ),
-            )
-        transcript_path, clean_text = write_transcript_files(audio_path, output_dir, text)
-        transcript_files.append(transcript_path)
-        combined_sections.append(f"--- {os.path.basename(audio_path)} ---\n{clean_text}")
-
-    combined_path = write_combined_transcript(output_dir, combined_sections)
-    transcript_files.append(combined_path)
-    return transcript_files, "\n\n".join(combined_sections), combined_path
 
 
 def set_files_to_clipboard(file_paths):
@@ -1932,7 +1828,7 @@ class CatAudioCutterApp:
 
         mode_options = [
             ("מקומי במחשב", TRANSCRIPTION_LOCAL),
-            ("API חיצוני", TRANSCRIPTION_EXTERNAL),
+            ("מקומי + תיקון API", TRANSCRIPTION_EXTERNAL),
             ("WhatsApp", TRANSCRIPTION_WHATSAPP),
             ("רק לשמור", TRANSCRIPTION_NONE),
         ]
@@ -1954,6 +1850,7 @@ class CatAudioCutterApp:
             section,
             text="להוסיף סיכום מקצועי בתחילת קובץ התמלול",
             variable=self.add_professional_summary_var,
+            command=self.toggle_transcription_settings,
             bg=CARD,
             fg=TEXT,
             activebackground=CARD,
@@ -1980,10 +1877,17 @@ class CatAudioCutterApp:
             width=42,
         )
         self.local_model_combo.pack(side="left")
+        ttk.Button(
+            local_model_row,
+            text="בדוק/הורד מודל",
+            command=self.start_model_download,
+            style="Compact.TButton",
+        ).pack(side="left", padx=(10, 0))
         tk.Checkbutton(
             self.local_transcription_frame,
             text="אחרי התמלול המקומי, לתקן את הטקסט עם Gemini/OpenRouter",
             variable=self.improve_local_transcript_with_gemini_var,
+            command=self.toggle_transcription_settings,
             bg=CARD,
             fg=TEXT,
             activebackground=CARD,
@@ -1993,7 +1897,7 @@ class CatAudioCutterApp:
         ).pack(anchor="w", pady=(10, 0))
         tk.Label(
             self.local_transcription_frame,
-            text="בפעם הראשונה המודל עשוי לרדת מהאינטרנט; אחר כך הוא רץ מהמחשב. תיקון עם API שולח רק את הטקסט, לא את קובץ האודיו.",
+            text="התמלול תמיד מתחיל במודל המקומי. בפעם הראשונה המודל יורד מהאינטרנט; אחר כך הוא רץ מהמחשב. תיקון עם API שולח רק את טקסט התמלול, לא את קובץ האודיו.",
             bg=CARD,
             fg=TEXT,
             font=("Segoe UI", 9),
@@ -2004,7 +1908,7 @@ class CatAudioCutterApp:
         self.external_transcription_frame = tk.Frame(section, bg=CARD)
         external_grid = tk.Frame(self.external_transcription_frame, bg=CARD)
         external_grid.pack(fill="x")
-        tk.Label(external_grid, text="ספק API", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=4)
+        tk.Label(external_grid, text="ספק שיפור טקסט", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=4)
         self.external_provider_combo = ttk.Combobox(
             external_grid,
             textvariable=self.external_provider_var,
@@ -2015,7 +1919,7 @@ class CatAudioCutterApp:
         self.external_provider_combo.grid(row=0, column=1, sticky="w", padx=(10, 0), pady=4)
         self.external_provider_combo.bind("<<ComboboxSelected>>", lambda _event: self.on_external_provider_change())
 
-        tk.Label(external_grid, text="כתובת API", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w", pady=4)
+        tk.Label(external_grid, text="כתובת API לטקסט", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w", pady=4)
         tk.Entry(
             external_grid,
             textvariable=self.external_api_url_var,
@@ -2024,7 +1928,7 @@ class CatAudioCutterApp:
             fg=TEXT,
             relief="flat",
         ).grid(row=1, column=1, sticky="ew", padx=(10, 0), ipady=6, pady=4)
-        tk.Label(external_grid, text="מודל תמלול", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=4)
+        tk.Label(external_grid, text="מודל תיקון/סיכום", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=4)
         tk.Entry(
             external_grid,
             textvariable=self.external_model_var,
@@ -2033,7 +1937,7 @@ class CatAudioCutterApp:
             fg=TEXT,
             relief="flat",
         ).grid(row=2, column=1, sticky="ew", padx=(10, 0), ipady=6, pady=4)
-        tk.Label(external_grid, text="מודל טקסט", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=3, column=0, sticky="w", pady=4)
+        tk.Label(external_grid, text="מודל טקסט חלופי", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=3, column=0, sticky="w", pady=4)
         tk.Entry(
             external_grid,
             textvariable=self.external_text_model_var,
@@ -2081,7 +1985,7 @@ class CatAudioCutterApp:
         external_grid.columnconfigure(1, weight=1)
         tk.Label(
             self.external_transcription_frame,
-            text="אפשר לשמור כמה מפתחות לכל ספק, מפתח אחד בכל שורה. אם מפתח אחד נחסם/נגמר לו quota, הכלי ינסה את הבא. OpenRouter משתמש ב-audio/transcriptions לתמלול וב-chat/completions לתיקון וסיכום.",
+            text="ה-API לא מקבל אודיו. הכלי מתמלל מקומית, ואז שולח רק את טקסט התמלול לתיקון, ניקוי ג'יבריש וסיכום. אפשר לשמור כמה מפתחות לכל ספק, מפתח אחד בכל שורה; אם מפתח נחסם או נגמר לו quota, הכלי ינסה את הבא.",
             bg=CARD,
             fg=TEXT,
             font=("Segoe UI", 9),
@@ -2386,18 +2290,30 @@ class CatAudioCutterApp:
         if not hasattr(self, "local_transcription_frame"):
             return
 
-        frames = {
-            TRANSCRIPTION_LOCAL: self.local_transcription_frame,
-            TRANSCRIPTION_EXTERNAL: self.external_transcription_frame,
-            TRANSCRIPTION_WHATSAPP: self.whatsapp_transcription_frame,
-            TRANSCRIPTION_NONE: self.no_transcription_frame,
-        }
-        for frame in frames.values():
+        for frame in (
+            self.local_transcription_frame,
+            self.external_transcription_frame,
+            self.whatsapp_transcription_frame,
+            self.no_transcription_frame,
+        ):
             frame.pack_forget()
 
-        selected_frame = frames.get(self.transcription_mode_var.get())
-        if selected_frame:
-            selected_frame.pack(fill="x", pady=(8, 0))
+        mode = self.transcription_mode_var.get()
+        needs_api_settings = (
+            mode == TRANSCRIPTION_EXTERNAL
+            or self.improve_local_transcript_with_gemini_var.get()
+            or self.add_professional_summary_var.get()
+        )
+
+        if mode in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL}:
+            self.local_transcription_frame.pack(fill="x", pady=(8, 0))
+            if needs_api_settings:
+                self.external_transcription_frame.pack(fill="x", pady=(8, 0))
+        elif mode == TRANSCRIPTION_WHATSAPP:
+            self.whatsapp_transcription_frame.pack(fill="x", pady=(8, 0))
+        elif mode == TRANSCRIPTION_NONE:
+            self.no_transcription_frame.pack(fill="x", pady=(8, 0))
+
         self.update_scroll_helpers()
 
     def on_external_provider_change(self, initial=False):
@@ -2405,27 +2321,29 @@ class CatAudioCutterApp:
         if hasattr(self, "external_api_key_entry") and not initial:
             self.save_current_api_keys(silent=True, provider=self.active_external_provider_value)
 
+        legacy_audio_url = "https://api.openai.com/v1/audio/transcriptions"
+        legacy_audio_model = "whisper-1"
         if provider == EXTERNAL_PROVIDER_GEMINI:
-            if self.external_api_url_var.get().strip() in {"", DEFAULT_EXTERNAL_TRANSCRIPTION_URL, DEFAULT_OPENROUTER_TRANSCRIPTION_URL}:
+            if self.external_api_url_var.get().strip() in {"", DEFAULT_EXTERNAL_TRANSCRIPTION_URL, DEFAULT_OPENROUTER_CHAT_URL, legacy_audio_url}:
                 self.external_api_url_var.set(DEFAULT_GEMINI_TRANSCRIPTION_URL)
-            if self.external_model_var.get().strip() in {"", DEFAULT_EXTERNAL_TRANSCRIPTION_MODEL, DEFAULT_OPENROUTER_TRANSCRIPTION_MODEL}:
+            if self.external_model_var.get().strip() in {"", DEFAULT_EXTERNAL_TRANSCRIPTION_MODEL, DEFAULT_OPENROUTER_TEXT_MODEL, legacy_audio_model}:
                 self.external_model_var.set(DEFAULT_GEMINI_TRANSCRIPTION_MODEL)
             if self.external_text_model_var.get().strip() in {"", DEFAULT_OPENROUTER_TEXT_MODEL}:
                 self.external_text_model_var.set(DEFAULT_GEMINI_TRANSCRIPTION_MODEL)
         elif provider == EXTERNAL_PROVIDER_OPENROUTER:
-            if self.external_api_url_var.get().strip() in {"", DEFAULT_EXTERNAL_TRANSCRIPTION_URL, DEFAULT_GEMINI_TRANSCRIPTION_URL}:
-                self.external_api_url_var.set(DEFAULT_OPENROUTER_TRANSCRIPTION_URL)
-            if self.external_model_var.get().strip() in {"", DEFAULT_EXTERNAL_TRANSCRIPTION_MODEL, DEFAULT_GEMINI_TRANSCRIPTION_MODEL}:
-                self.external_model_var.set(DEFAULT_OPENROUTER_TRANSCRIPTION_MODEL)
+            if self.external_api_url_var.get().strip() in {"", DEFAULT_EXTERNAL_TRANSCRIPTION_URL, DEFAULT_GEMINI_TRANSCRIPTION_URL, legacy_audio_url}:
+                self.external_api_url_var.set(DEFAULT_OPENROUTER_CHAT_URL)
+            if self.external_model_var.get().strip() in {"", DEFAULT_EXTERNAL_TRANSCRIPTION_MODEL, DEFAULT_GEMINI_TRANSCRIPTION_MODEL, legacy_audio_model}:
+                self.external_model_var.set(DEFAULT_OPENROUTER_TEXT_MODEL)
             if self.external_text_model_var.get().strip() in {"", DEFAULT_GEMINI_TRANSCRIPTION_MODEL}:
                 self.external_text_model_var.set(DEFAULT_OPENROUTER_TEXT_MODEL)
         else:
-            if self.external_api_url_var.get().strip() in {"", DEFAULT_GEMINI_TRANSCRIPTION_URL, DEFAULT_OPENROUTER_TRANSCRIPTION_URL}:
+            if self.external_api_url_var.get().strip() in {"", DEFAULT_GEMINI_TRANSCRIPTION_URL, DEFAULT_OPENROUTER_CHAT_URL, legacy_audio_url}:
                 self.external_api_url_var.set(DEFAULT_EXTERNAL_TRANSCRIPTION_URL)
-            if self.external_model_var.get().strip() in {"", DEFAULT_GEMINI_TRANSCRIPTION_MODEL, DEFAULT_OPENROUTER_TRANSCRIPTION_MODEL}:
+            if self.external_model_var.get().strip() in {"", DEFAULT_GEMINI_TRANSCRIPTION_MODEL, DEFAULT_OPENROUTER_TEXT_MODEL, legacy_audio_model}:
                 self.external_model_var.set(DEFAULT_EXTERNAL_TRANSCRIPTION_MODEL)
             if not self.external_text_model_var.get().strip():
-                self.external_text_model_var.set(DEFAULT_GEMINI_TRANSCRIPTION_MODEL)
+                self.external_text_model_var.set(DEFAULT_EXTERNAL_TRANSCRIPTION_MODEL)
 
         if hasattr(self, "external_api_key_entry"):
             self.set_current_api_keys(read_api_keys_for_provider(provider))
@@ -2659,6 +2577,57 @@ class CatAudioCutterApp:
         except Exception as error:
             messagebox.showwarning("עדכון תוכנה", f"העדכון הושלם, אבל ההפעלה מחדש לא הצליחה:\n{error_details(error)}")
 
+    def start_model_download(self):
+        if self.is_processing:
+            messagebox.showinfo("מודל תמלול", "אי אפשר לבדוק/להוריד מודל בזמן שהכלי עובד על פעולה אחרת.")
+            return
+
+        model_name = get_local_model_name(self.local_model_var.get())
+        self.set_progress(0)
+        self.set_processing_state(True)
+        self.set_processing_hint("בודקת מודל מקומי")
+        self.set_status("בודקת אם מודל התמלול המקומי כבר קיים במחשב...")
+        worker = threading.Thread(target=self.model_download_worker, args=(model_name,), daemon=True)
+        worker.start()
+
+    def model_download_worker(self, model_name: str):
+        def report(label, percent=None):
+            self.root.after(
+                0,
+                lambda label=label, percent=percent: (
+                    self.set_processing_hint(label),
+                    self.set_status(label),
+                    self.set_progress(percent if percent is not None else self.progress_var.get()),
+                ),
+            )
+
+        try:
+            model_path = ensure_faster_whisper_model(model_name, report)
+            self.root.after(0, lambda model_path=model_path: self.finish_model_download(model_path))
+        except Exception as error:
+            error_message = error_details(error)
+            self.root.after(0, lambda error_message=error_message: self.fail_model_download(error_message))
+
+    def finish_model_download(self, model_path: str):
+        self.set_processing_state(False)
+        self.set_progress(100)
+        self.set_status("מודל התמלול המקומי מוכן במחשב ואפשר להתחיל תמלול.")
+        messagebox.showinfo(
+            "מודל תמלול מוכן",
+            "מודל התמלול המקומי נמצא ומוכן לשימוש.\n\n"
+            f"מיקום במחשב:\n{model_path}",
+        )
+
+    def fail_model_download(self, error_message: str):
+        self.set_processing_state(False)
+        self.set_progress(0)
+        self.set_status("מודל התמלול המקומי עדיין לא מוכן.")
+        messagebox.showerror(
+            "מודל תמלול",
+            "לא הצלחתי להכין את מודל התמלול המקומי.\n\n"
+            f"פרטים:\n{error_message}",
+        )
+
     def build_target_output_dir(self):
         base_dir = self.save_dir_var.get().strip()
         if not base_dir:
@@ -2717,34 +2686,49 @@ class CatAudioCutterApp:
         external_api_keys = self.get_current_api_keys() or read_api_keys_for_provider(external_provider)
         improve_local_with_gemini = self.improve_local_transcript_with_gemini_var.get()
         add_professional_summary = self.add_professional_summary_var.get()
-        if external_provider in {EXTERNAL_PROVIDER_GEMINI, EXTERNAL_PROVIDER_OPENROUTER}:
-            text_provider = external_provider
-            text_api_keys = external_api_keys
-            text_model = external_text_model
+
+        if "/audio/transcriptions" in external_api_url:
+            if external_provider == EXTERNAL_PROVIDER_OPENROUTER:
+                external_api_url = DEFAULT_OPENROUTER_CHAT_URL
+                self.external_api_url_var.set(external_api_url)
+            elif external_provider == EXTERNAL_PROVIDER_OPENAI:
+                external_api_url = DEFAULT_EXTERNAL_TRANSCRIPTION_URL
+                self.external_api_url_var.set(external_api_url)
+
+        if external_provider in {EXTERNAL_PROVIDER_OPENAI, EXTERNAL_PROVIDER_GEMINI, EXTERNAL_PROVIDER_OPENROUTER}:
+            if external_provider == EXTERNAL_PROVIDER_OPENAI and not external_api_keys:
+                legacy_gemini_keys = read_api_keys_for_provider(EXTERNAL_PROVIDER_GEMINI)
+                text_provider = EXTERNAL_PROVIDER_GEMINI
+                text_endpoint_url = DEFAULT_GEMINI_TRANSCRIPTION_URL
+                text_api_keys = legacy_gemini_keys
+                text_model = DEFAULT_GEMINI_TRANSCRIPTION_MODEL
+            else:
+                text_provider = external_provider
+                text_endpoint_url = external_api_url
+                text_api_keys = external_api_keys
+                text_model = external_text_model or external_model
         else:
             text_provider = EXTERNAL_PROVIDER_GEMINI
+            text_endpoint_url = DEFAULT_GEMINI_TRANSCRIPTION_URL
             text_api_keys = read_api_keys_for_provider(EXTERNAL_PROVIDER_GEMINI)
             text_model = DEFAULT_GEMINI_TRANSCRIPTION_MODEL
 
-        if transcription_mode == TRANSCRIPTION_LOCAL and improve_local_with_gemini:
-            if not text_api_keys:
-                raise ValueError(
-                    "כדי לתקן את התמלול המקומי צריך לפחות API key אחד עבור Gemini או OpenRouter."
-                )
-        if transcription_mode in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL} and add_professional_summary and not text_api_keys:
-            raise ValueError(
-                "כדי להוסיף סיכום מקצועי צריך לפחות API key אחד עבור Gemini או OpenRouter."
-            )
+        needs_text_api = (
+            transcription_mode == TRANSCRIPTION_EXTERNAL
+            or (transcription_mode == TRANSCRIPTION_LOCAL and improve_local_with_gemini)
+            or (transcription_mode in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL} and add_professional_summary)
+        )
+
+        if needs_text_api and not text_api_keys:
+            raise ValueError("כדי לתקן או לסכם את התמלול צריך לפחות API key אחד עבור ספק הטקסט שנבחר.")
 
         if transcription_mode == TRANSCRIPTION_EXTERNAL:
             if external_provider not in {EXTERNAL_PROVIDER_OPENAI, EXTERNAL_PROVIDER_GEMINI, EXTERNAL_PROVIDER_OPENROUTER}:
                 raise ValueError("בחרי ספק API חיצוני תקין.")
             if not external_api_url:
-                raise ValueError("במצב API חיצוני צריך כתובת API.")
-            if not external_model:
-                raise ValueError("במצב API חיצוני צריך שם מודל.")
-            if external_provider in {EXTERNAL_PROVIDER_GEMINI, EXTERNAL_PROVIDER_OPENROUTER} and not external_api_keys:
-                raise ValueError("ב-Gemini או OpenRouter צריך להדביק לפחות API key אחד.")
+                raise ValueError("במצב תיקון API צריך כתובת API לטקסט.")
+            if not text_model:
+                raise ValueError("במצב תיקון API צריך שם מודל טקסט.")
 
         output_dir = self.build_target_output_dir()
 
@@ -2768,6 +2752,7 @@ class CatAudioCutterApp:
             "external_text_model": external_text_model,
             "external_api_keys": external_api_keys,
             "text_provider": text_provider,
+            "text_endpoint_url": text_endpoint_url,
             "text_model": text_model,
             "text_api_keys": text_api_keys,
         }
@@ -2874,12 +2859,12 @@ class CatAudioCutterApp:
             transcript_path = None
             transcription_mode = settings["transcription_mode"]
 
-            if transcription_mode == TRANSCRIPTION_LOCAL:
+            if transcription_mode in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL}:
                 self.root.after(
                     0,
                     lambda: (
                         self.set_processing_hint("טוענת מודל תמלול מקומי"),
-                        self.set_status("מתמללת בעברית על המחשב. בפעם הראשונה זה יכול לקחת כמה דקות..."),
+                        self.set_status("מתמללת בעברית על המחשב. אחר כך, אם נבחר API, רק הטקסט יישלח לתיקון..."),
                         self.set_progress(62),
                     ),
                 )
@@ -2906,12 +2891,16 @@ class CatAudioCutterApp:
                     self.temp_dir,
                 )
                 copied_files.extend(transcript_files)
-                if settings["improve_local_with_gemini"]:
+                should_improve_text = (
+                    transcription_mode == TRANSCRIPTION_EXTERNAL
+                    or settings["improve_local_with_gemini"]
+                )
+                if should_improve_text:
                     self.root.after(
                         0,
                         lambda: (
                             self.set_processing_hint("מתקן את הטקסט"),
-                            self.set_status("התמלול המקומי נשמר. ספק ה-AI מתקן עכשיו את הטקסט בלבד..."),
+                            self.set_status("התמלול המקומי נשמר. ספק ה-AI מקבל עכשיו רק טקסט ומתקן ג'יבריש, תחביר ופיסוק..."),
                             self.set_progress(96),
                         ),
                     )
@@ -2919,6 +2908,7 @@ class CatAudioCutterApp:
                         corrected_text = correct_transcript_text_with_ai_provider(
                             transcript_text,
                             settings["text_provider"],
+                            settings["text_endpoint_url"],
                             settings["text_model"],
                             settings["text_api_keys"],
                             lambda label: self.root.after(
@@ -2942,73 +2932,6 @@ class CatAudioCutterApp:
                                 f"פרטים:\n{error_details(error)}\n"
                             )
                         copied_files.append(warning_path)
-            elif transcription_mode == TRANSCRIPTION_EXTERNAL:
-                if settings["external_provider"] == EXTERNAL_PROVIDER_GEMINI:
-                    external_provider_name = "Gemini"
-                elif settings["external_provider"] == EXTERNAL_PROVIDER_OPENROUTER:
-                    external_provider_name = "OpenRouter"
-                else:
-                    external_provider_name = "API חיצוני"
-                self.root.after(
-                    0,
-                    lambda external_provider_name=external_provider_name: (
-                        self.set_processing_hint("מתחברת למודל חיצוני"),
-                        self.set_status(f"שולחת את המקטעים ל-{external_provider_name}..."),
-                        self.set_progress(62),
-                    ),
-                )
-                try:
-                    transcript_files, transcript_text, transcript_path = transcribe_audio_files_with_external_api(
-                        split_paths,
-                        settings["output_dir"],
-                        settings["external_api_url"],
-                        settings["external_model"],
-                        settings["external_api_keys"],
-                        settings["external_provider"],
-                        lambda current, total, label: self.root.after(
-                            0,
-                            lambda current=current, total=total, label=label: (
-                                self.set_processing_hint(label),
-                                self.set_progress(62 + (current / max(total, 1)) * 33),
-                                self.set_status(f"מתמללת דרך API חיצוני: {current} מתוך {total}..."),
-                            ),
-                        ),
-                        self.temp_dir,
-                    )
-                except ExternalApiBusyError:
-                    if settings["external_provider"] != EXTERNAL_PROVIDER_GEMINI:
-                        raise
-                    self.root.after(
-                        0,
-                        lambda: (
-                            self.set_processing_hint("Gemini עמוס - עוברת לתמלול מקומי"),
-                            self.set_status("Gemini עדיין עמוס אחרי כמה ניסיונות. עוברת אוטומטית לתמלול המקומי."),
-                            self.set_progress(62),
-                        ),
-                    )
-                    transcript_files, transcript_text, transcript_path = transcribe_audio_files_locally(
-                        split_paths,
-                        settings["output_dir"],
-                        settings["local_model_name"],
-                        lambda current, total, label: self.root.after(
-                            0,
-                            lambda current=current, total=total, label=label: (
-                                self.set_processing_hint(label),
-                                self.set_progress(78 + (current / max(total, 1)) * 17),
-                                self.set_status(f"מתמללת מקטע {current} מתוך {total} מקומית..."),
-                            ),
-                        ),
-                        lambda label, percent=None: self.root.after(
-                            0,
-                            lambda label=label, percent=percent: (
-                                self.set_processing_hint(label),
-                                self.set_progress(58 + ((percent or 0) / 100) * 20),
-                                self.set_status(label),
-                            ),
-                        ),
-                        self.temp_dir,
-                    )
-                copied_files.extend(transcript_files)
             elif transcription_mode == TRANSCRIPTION_WHATSAPP:
                 self.root.after(
                     0,
@@ -3041,6 +2964,7 @@ class CatAudioCutterApp:
                     summary_text = summarize_transcript_with_ai_provider(
                         transcript_text,
                         settings["text_provider"],
+                        settings["text_endpoint_url"],
                         settings["text_model"],
                         settings["text_api_keys"],
                         lambda label: self.root.after(

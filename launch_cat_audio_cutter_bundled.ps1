@@ -187,9 +187,6 @@ gemini_url = globals_dict['build_gemini_generate_content_url'](
 )
 if 'gemini-flash-latest:generateContent' not in gemini_url:
     raise RuntimeError('self-test Gemini URL builder failed')
-gemini_payload = globals_dict['build_gemini_transcription_payload'](copied[0])
-if 'contents' not in gemini_payload or 'inlineData' not in gemini_payload['contents'][0]['parts'][1]:
-    raise RuntimeError('self-test Gemini payload builder failed')
 gemini_fix_payload = globals_dict['build_gemini_text_fix_payload']('bad transcript text')
 if 'bad transcript text' not in gemini_fix_payload['contents'][0]['parts'][0]['text']:
     raise RuntimeError('self-test Gemini text-fix payload builder failed')
@@ -199,9 +196,11 @@ if 'meeting transcript text' not in gemini_summary_payload['contents'][0]['parts
 gemini_text = globals_dict['extract_gemini_transcript_text']('{"candidates":[{"content":{"parts":[{"text":"hello from gemini"}]}}]}')
 if 'hello from gemini' not in gemini_text:
     raise RuntimeError('self-test Gemini response parser failed')
-openrouter_payload = globals_dict['build_openrouter_transcription_payload'](copied[0], 'openai/whisper-large-v3')
-if openrouter_payload.get('model') != 'openai/whisper-large-v3' or 'input_audio' not in openrouter_payload:
-    raise RuntimeError('self-test OpenRouter transcription payload builder failed')
+chat_payload = globals_dict['build_openrouter_chat_payload']('fix this transcript', 'openrouter/auto')
+if chat_payload.get('model') != 'openrouter/auto' or chat_payload['messages'][0]['content'] != 'fix this transcript':
+    raise RuntimeError('self-test chat payload builder failed')
+if globals_dict['DEFAULT_EXTERNAL_TRANSCRIPTION_URL'] != 'https://api.openai.com/v1/chat/completions':
+    raise RuntimeError('self-test external text endpoint default failed')
 chat_text = globals_dict['extract_chat_completion_text']('{"choices":[{"message":{"content":"hello from chat"}}]}')
 if chat_text != 'hello from chat':
     raise RuntimeError('self-test chat completion parser failed')
