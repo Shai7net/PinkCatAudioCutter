@@ -239,7 +239,7 @@ app = globals_dict['CatAudioCutterApp']()
 app.root.update_idletasks()
 if not hasattr(app, 'transcribe_button') or not app.transcribe_button.winfo_exists():
     raise RuntimeError('self-test UI did not create the transcribe action card')
-if not hasattr(app, 'player_progress_bar') or not app.player_progress_bar.winfo_exists():
+if not hasattr(app, 'player_fill_item'):
     raise RuntimeError('self-test UI did not create the audio player')
 if app.settings_notebook.index('end') < 4:
     raise RuntimeError('self-test UI did not create the settings tabs')

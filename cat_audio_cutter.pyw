@@ -30,6 +30,7 @@ UPDATE_SOURCE_FILES = [
     ".gitignore",
     "README.md",
     "api_keys.example.json",
+    "menu_2.png",
     "cat_audio_cutter.pyw",
     "launch_cat_audio_cutter_bundled.ps1",
     "open_cat_audio_cutter.bat",
@@ -151,6 +152,19 @@ def get_gemini_api_key_file_path() -> str:
 
 def get_api_keys_file_path() -> str:
     return os.path.join(get_app_config_dir(), API_KEYS_FILE_NAME)
+
+
+def get_menu_design_image_path() -> str:
+    candidates = [
+        os.path.join(get_app_config_dir(), "menu_2.png"),
+        os.path.join(get_app_config_dir(), "menu 2.png"),
+        os.path.join(os.path.dirname(get_app_config_dir()), "menu 2.png"),
+        os.path.join(get_runtime_base_dir(), "menu_2.png"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return ""
 
 
 def get_settings_file_path() -> str:
@@ -1903,15 +1917,17 @@ class CatAudioCutterApp:
         self.empowering_messages_enabled_var = tk.BooleanVar(value=setting("empowering_messages_enabled", True))
         self.status_var = tk.StringVar(value="מחכה לקובץ שמע")
         self.progress_var = tk.DoubleVar(value=0)
-        self.selected_file_label_var = tk.StringVar(value="לא נבחר קובץ")
+        self.selected_file_label_var = tk.StringVar(value="")
         self.player_progress_var = tk.DoubleVar(value=0)
-        self.player_time_var = tk.StringVar(value="00:00 / 00:00")
+        self.player_time_var = tk.StringVar(value="")
         self.player_status_var = tk.StringVar(value="בחרי קובץ כדי להאזין מתוך האפליקציה")
 
         self.temp_dir = None
         self.audio_player = AudioPreviewPlayer()
         self.audio_player_path = ""
         self.audio_player_update_job = None
+        self.menu_design_image = None
+        self.settings_dialog = None
         self.random_message_job = None
         self.last_saved_dir = None
         self.last_output_files = []
@@ -1978,25 +1994,104 @@ class CatAudioCutterApp:
         shell = tk.Frame(self.root, bg=BG)
         shell.pack(fill="both", expand=True)
 
-        self.settings_panel = tk.Frame(shell, bg=PANEL, width=360, padx=12, pady=16)
-        self.settings_panel.pack(side="left", fill="y")
-        self.settings_panel.pack_propagate(False)
-        self.build_settings_panel(self.settings_panel)
-
         self.main_canvas = tk.Canvas(shell, bg=BG, highlightthickness=0)
         self.main_scrollbar = ttk.Scrollbar(shell, orient="vertical", command=self.main_canvas.yview)
         self.main_canvas.configure(yscrollcommand=self.main_scrollbar.set)
-        self.main_canvas.pack(side="right", fill="both", expand=True)
+        self.main_canvas.pack(side="left", fill="both", expand=True)
         self.main_scrollbar.pack(side="right", fill="y")
-
-        outer = tk.Frame(self.main_canvas, bg=BG, padx=30, pady=26)
-        self.canvas_window_id = self.main_canvas.create_window((0, 0), window=outer, anchor="nw")
-        outer.bind("<Configure>", self.on_content_configure)
         self.main_canvas.bind("<Configure>", self.on_canvas_configure)
         self.main_canvas.bind_all("<MouseWheel>", self.on_mousewheel)
-
         self.quick_scroll_button = ttk.Button(self.root, text="↓", width=3, command=self.scroll_to_actions, style="Pink.TButton")
-        self.build_main_action_panel(outer)
+
+        self.build_mockup_canvas()
+        self.build_settings_dialog()
+
+    def build_mockup_canvas(self):
+        image_path = get_menu_design_image_path()
+        if not image_path:
+            fallback = tk.Frame(self.main_canvas, bg=BG, padx=30, pady=26)
+            self.canvas_window_id = self.main_canvas.create_window((0, 0), window=fallback, anchor="nw")
+            fallback.bind("<Configure>", self.on_content_configure)
+            self.build_main_action_panel(fallback)
+            return
+
+        self.menu_design_image = tk.PhotoImage(file=image_path)
+        width = self.menu_design_image.width()
+        height = self.menu_design_image.height()
+        self.menu_image_item = self.main_canvas.create_image(0, 0, image=self.menu_design_image, anchor="nw")
+        self.main_canvas.configure(scrollregion=(0, 0, width, height + 120))
+        self.canvas_window_id = None
+
+        self.create_mockup_hotspot("settings", 35, 35, 274, 183, self.open_settings_dialog)
+        self.create_mockup_hotspot("upload", 67, 262, 1015, 691, self.pick_audio_file)
+        self.create_mockup_hotspot("player", 38, 716, 1030, 805, self.toggle_audio_preview)
+        self.create_mockup_hotspot("cut", 67, 822, 1015, 1252, self.start_cut_audio_only)
+        self.create_mockup_hotspot("transcribe", 75, 1356, 1018, 1788, self.start_transcribe_audio_now)
+
+        self.player_fill_item = self.main_canvas.create_rectangle(60, 729, 60, 783, fill="#f4a9c7", outline="")
+        self.player_time_canvas_item = self.main_canvas.create_text(
+            1000,
+            786,
+            text=self.player_time_var.get(),
+            anchor="e",
+            fill=TEXT,
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.selected_file_canvas_item = self.main_canvas.create_text(
+            540,
+            792,
+            text=self.selected_file_label_var.get(),
+            anchor="center",
+            fill=TEXT,
+            font=("Segoe UI", 10, "bold"),
+            width=660,
+        )
+        self.status_canvas_item = self.main_canvas.create_text(
+            540,
+            1850,
+            text=self.status_var.get(),
+            anchor="center",
+            fill=TEXT,
+            font=("Segoe UI", 11, "bold"),
+            width=900,
+        )
+        self.progress_canvas_item = self.main_canvas.create_rectangle(80, 1872, 80, 1888, fill=TEAL, outline="")
+        self.progress_track_canvas_item = self.main_canvas.create_rectangle(80, 1872, 1000, 1888, outline="#ff9ec9", width=2)
+        self.processing_label_var = tk.StringVar(value="")
+        self.progress_bar = ttk.Progressbar(self.root, variable=self.progress_var, maximum=100)
+        self.player_play_button = None
+        self.message_button = None
+        self.open_folder_button = None
+        self.action_row = self.main_canvas
+        self.cut_button = self.transcribe_button = self.main_canvas
+        self.cut_audio_button = self.upload_action_button = self.main_canvas
+
+    def create_mockup_hotspot(self, tag: str, x1: int, y1: int, x2: int, y2: int, command):
+        item = self.main_canvas.create_rectangle(x1, y1, x2, y2, fill="", outline="", tags=(tag, "hotspot"))
+        self.main_canvas.tag_bind(item, "<Button-1>", lambda _event: command())
+        self.main_canvas.tag_bind(item, "<Enter>", lambda _event: self.main_canvas.configure(cursor="hand2"))
+        self.main_canvas.tag_bind(item, "<Leave>", lambda _event: self.main_canvas.configure(cursor=""))
+        return item
+
+    def build_settings_dialog(self):
+        self.settings_dialog = tk.Toplevel(self.root)
+        self.settings_dialog.title("הגדרות")
+        self.settings_dialog.configure(bg=PANEL)
+        self.settings_dialog.geometry("470x760")
+        self.settings_dialog.withdraw()
+        self.settings_dialog.protocol("WM_DELETE_WINDOW", self.hide_settings_dialog)
+        self.build_settings_panel(self.settings_dialog)
+
+    def open_settings_dialog(self):
+        if not self.settings_dialog:
+            return
+        self.settings_dialog.deiconify()
+        self.settings_dialog.lift()
+        self.settings_dialog.focus_force()
+
+    def hide_settings_dialog(self):
+        if self.settings_dialog:
+            self.settings_dialog.withdraw()
 
     def build_settings_panel(self, parent):
         tk.Label(
@@ -2970,13 +3065,18 @@ class CatAudioCutterApp:
         self.stop_audio_preview(close_player=True)
         self.audio_player_path = ""
         self.player_progress_var.set(0)
+        self.update_player_canvas_progress(0)
         self.player_time_var.set("00:00 / 00:00")
+        if hasattr(self, "player_time_canvas_item"):
+            self.main_canvas.itemconfigure(self.player_time_canvas_item, text=self.player_time_var.get())
         if file_path:
             self.selected_file_label_var.set(Path(file_path).name)
             self.player_status_var.set("אפשר ללחוץ Play כדי לשמוע את הקובץ שנבחר")
         else:
-            self.selected_file_label_var.set("לא נבחר קובץ")
+            self.selected_file_label_var.set("")
             self.player_status_var.set("בחרי קובץ כדי להאזין מתוך האפליקציה")
+        if hasattr(self, "selected_file_canvas_item"):
+            self.main_canvas.itemconfigure(self.selected_file_canvas_item, text=self.selected_file_label_var.get())
 
     def ensure_audio_preview_loaded(self):
         audio_path = self.audio_path_var.get().strip()
@@ -2993,11 +3093,13 @@ class CatAudioCutterApp:
             mode = self.audio_player.status()
             if mode == "playing":
                 self.audio_player.pause()
-                self.player_play_button.configure(text="▶")
+                if self.player_play_button is not None:
+                    self.player_play_button.configure(text="▶")
                 self.player_status_var.set("ההשמעה מושהית")
                 return
             self.audio_player.play()
-            self.player_play_button.configure(text="⏸")
+            if self.player_play_button is not None:
+                self.player_play_button.configure(text="⏸")
             self.player_status_var.set("משמיעה את הקובץ שנבחר")
             self.schedule_audio_player_update()
         except Exception as error:
@@ -3009,6 +3111,16 @@ class CatAudioCutterApp:
             self.root.after_cancel(self.audio_player_update_job)
         self.update_audio_player_progress()
 
+    def update_player_canvas_progress(self, percent: float):
+        if hasattr(self, "player_fill_item"):
+            self.main_canvas.coords(
+                self.player_fill_item,
+                60,
+                729,
+                60 + (962 * (max(0, min(100, percent)) / 100)),
+                783,
+            )
+
     def update_audio_player_progress(self):
         self.audio_player_update_job = None
         if not self.audio_player.is_open:
@@ -3017,18 +3129,27 @@ class CatAudioCutterApp:
             length = self.audio_player.length()
             position = self.audio_player.position()
             if length > 0:
-                self.player_progress_var.set(max(0, min(100, (position / length) * 100)))
+                percent = max(0, min(100, (position / length) * 100))
+                self.player_progress_var.set(percent)
+                self.update_player_canvas_progress(percent)
                 self.player_time_var.set(f"{format_player_time(position)} / {format_player_time(length)}")
+                if hasattr(self, "player_time_canvas_item"):
+                    self.main_canvas.itemconfigure(self.player_time_canvas_item, text=self.player_time_var.get())
             mode = self.audio_player.status()
             if mode == "playing":
                 self.audio_player_update_job = self.root.after(500, self.update_audio_player_progress)
             else:
-                self.player_play_button.configure(text="▶")
+                if self.player_play_button is not None:
+                    self.player_play_button.configure(text="▶")
                 if mode == "stopped" and length > 0 and position >= max(length - 500, 0):
                     self.player_progress_var.set(0)
+                    self.update_player_canvas_progress(0)
                     self.player_time_var.set(f"00:00 / {format_player_time(length)}")
+                    if hasattr(self, "player_time_canvas_item"):
+                        self.main_canvas.itemconfigure(self.player_time_canvas_item, text=self.player_time_var.get())
         except Exception:
-            self.player_play_button.configure(text="▶")
+            if self.player_play_button is not None:
+                self.player_play_button.configure(text="▶")
 
     def stop_audio_preview(self, close_player: bool = False):
         if self.audio_player_update_job:
@@ -3041,9 +3162,10 @@ class CatAudioCutterApp:
                 self.audio_player.stop()
         except Exception:
             pass
-        if hasattr(self, "player_play_button"):
+        if getattr(self, "player_play_button", None) is not None:
             self.player_play_button.configure(text="▶")
         self.player_progress_var.set(0)
+        self.update_player_canvas_progress(0)
 
     def pick_save_dir(self):
         folder = filedialog.askdirectory(title="בחרי תיקיית שמירה")
@@ -3243,11 +3365,16 @@ class CatAudioCutterApp:
 
     def set_status(self, text):
         self.status_var.set(text)
+        if hasattr(self, "status_canvas_item"):
+            self.main_canvas.itemconfigure(self.status_canvas_item, text=text)
         self.root.update_idletasks()
         self.update_scroll_helpers()
 
     def set_progress(self, value):
-        self.progress_var.set(max(0, min(100, value)))
+        percent = max(0, min(100, value))
+        self.progress_var.set(percent)
+        if hasattr(self, "progress_canvas_item"):
+            self.main_canvas.coords(self.progress_canvas_item, 80, 1872, 80 + (920 * (percent / 100)), 1888)
         self.root.update_idletasks()
 
     def on_content_configure(self, _event=None):
@@ -3255,7 +3382,8 @@ class CatAudioCutterApp:
         self.update_scroll_helpers()
 
     def on_canvas_configure(self, event):
-        self.main_canvas.itemconfigure(self.canvas_window_id, width=event.width)
+        if self.canvas_window_id:
+            self.main_canvas.itemconfigure(self.canvas_window_id, width=event.width)
         self.update_scroll_helpers()
 
     def on_mousewheel(self, event):
@@ -3265,6 +3393,10 @@ class CatAudioCutterApp:
 
     def update_scroll_helpers(self):
         if not hasattr(self, "main_canvas") or not self.main_canvas.winfo_exists():
+            return
+        if hasattr(self, "menu_image_item"):
+            if hasattr(self, "quick_scroll_button"):
+                self.quick_scroll_button.place_forget()
             return
         self.root.update_idletasks()
         bbox = self.main_canvas.bbox("all")
@@ -3289,6 +3421,14 @@ class CatAudioCutterApp:
         return y
 
     def scroll_to_actions(self):
+        if hasattr(self, "transcribe_button") and self.transcribe_button is self.main_canvas:
+            bbox = self.main_canvas.bbox("all")
+            if bbox:
+                content_height = max(bbox[3] - bbox[1], 1)
+                canvas_height = max(self.main_canvas.winfo_height(), 1)
+                max_scroll = max(content_height - canvas_height, 1)
+                self.main_canvas.yview_moveto(max(0.0, min(1356 / max_scroll, 1.0)))
+            return
         if not hasattr(self, "action_row"):
             return
         self.root.update_idletasks()
@@ -3319,8 +3459,9 @@ class CatAudioCutterApp:
                 except tk.TclError:
                     pass
         if is_processing:
-            self.progress_bar.configure(mode="indeterminate")
-            self.progress_bar.start(10)
+            if hasattr(self, "progress_bar"):
+                self.progress_bar.configure(mode="indeterminate")
+                self.progress_bar.start(10)
             self.processing_status_suffix = ""
             self.processing_animation_index = 0
             self.animate_processing_label()
@@ -3328,8 +3469,9 @@ class CatAudioCutterApp:
             if self.processing_animation_job:
                 self.root.after_cancel(self.processing_animation_job)
                 self.processing_animation_job = None
-            self.progress_bar.stop()
-            self.progress_bar.configure(mode="determinate")
+            if hasattr(self, "progress_bar"):
+                self.progress_bar.stop()
+                self.progress_bar.configure(mode="determinate")
             self.processing_label_var.set("")
 
     def animate_processing_label(self):

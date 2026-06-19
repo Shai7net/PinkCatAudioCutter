@@ -11,6 +11,9 @@ ffprobe_exe = ffmpeg_dir / "ffprobe.exe"
 
 datas = []
 binaries = []
+menu_design = project_root / "menu_2.png"
+if menu_design.exists():
+    datas += [(str(menu_design), ".")]
 if ffmpeg_exe.exists() and ffprobe_exe.exists():
     binaries += [(str(ffmpeg_exe), "."), (str(ffprobe_exe), ".")]
 hiddenimports = ['pyperclip', 'tkinter']

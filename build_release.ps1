@@ -36,6 +36,7 @@ python -m PyInstaller `
     --name $appName `
     --add-binary "${ffmpegExe};." `
     --add-binary "${ffprobeExe};." `
+    --add-data "$projectRoot\menu_2.png;." `
     --collect-all pyautogui `
     --collect-all pyscreeze `
     --collect-all pygetwindow `
