@@ -255,6 +255,21 @@ if not hasattr(app, 'player_fill_item'):
     raise RuntimeError('self-test UI did not create the audio player')
 if not hasattr(app, 'folder_canvas_item'):
     raise RuntimeError('self-test UI did not create the output folder icon')
+if set(app.hotspot_tooltip_texts) != {'upload', 'cut', 'transcribe'}:
+    raise RuntimeError('self-test UI did not create all three hover explanations')
+if globals_dict['HOVER_TOOLTIP_DELAY_MS'] != 2500 or globals_dict['WHATSAPP_NOTICE_DURATION_MS'] != 4000:
+    raise RuntimeError('self-test tooltip/WhatsApp notice timing failed')
+app.show_hover_tooltip('tooltip self-test')
+app.root.update_idletasks()
+if not app.hover_tooltip_window or not app.hover_tooltip_window.winfo_exists():
+    raise RuntimeError('self-test hover tooltip did not open')
+app.hide_hover_tooltip()
+app.show_whatsapp_clipboard_notice({'label': '+000', 'phone': '000'})
+app.root.update_idletasks()
+if not app.whatsapp_notice_window or not app.whatsapp_notice_window.winfo_exists():
+    raise RuntimeError('self-test WhatsApp clipboard notice did not open')
+app.whatsapp_notice_window.destroy()
+app.whatsapp_notice_window = None
 if len(app.whatsapp_bot_combo.cget('values')) < 2:
     raise RuntimeError('self-test UI did not create the WhatsApp bot choices')
 if app.settings_notebook.index('end') < 4:

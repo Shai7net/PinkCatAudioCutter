@@ -85,6 +85,21 @@ WHATSAPP_BOT_OPTIONS = {
 }
 WHATSAPP_PRIMARY_FORMAT = "mp3"
 WHATSAPP_FALLBACK_FORMAT = "ogg"
+HOVER_TOOLTIP_DELAY_MS = 2500
+WHATSAPP_NOTICE_DURATION_MS = 4000
+UPLOAD_TOOLTIP_TEXT = (
+    "בחירת קובץ שמע מהמחשב.\n"
+    "נתמכים הקבצים: MP3, WAV, M4A, AAC, OGG ו-FLAC."
+)
+CUT_TOOLTIP_TEXT = (
+    "חותך את האודיו ל-2 חלקים או יותר, לפי המספר שתבחרי. "
+    "כל החלקים נשמרים בתיקייה, ואפשר להעביר אותם לבוט התמלול ב-WhatsApp."
+)
+TRANSCRIBE_TOOLTIP_TEXT = (
+    "התמלול פועל לפי ההגדרות שבחרת: Whisper מקומי או Azure Cloud Whisper. "
+    "הורדה וטעינה ראשונה של מודל מקומי עשויות לקחת כמה דקות. "
+    "יש להמתין עד שמד ההתקדמות מסתיים; לאחר מכן אפשר גם לתקן את הטקסט דרך ספק ה-API שנבחר."
+)
 TRANSCRIPTION_LOCAL = "local"
 TRANSCRIPTION_EXTERNAL = "external"
 TRANSCRIPTION_WHATSAPP = "whatsapp"
@@ -1004,6 +1019,10 @@ class ExternalApiBusyError(RuntimeError):
     pass
 
 
+class WhatsAppPasteError(RuntimeError):
+    pass
+
+
 class ExternalApiHttpError(RuntimeError):
     def __init__(self, message: str, status_code: int = None):
         super().__init__(message)
@@ -1790,7 +1809,13 @@ def focus_whatsapp_message_box():
             target_window = max(windows, key=lambda window: window.width * window.height)
         else:
             active_window = pyautogui.getActiveWindow()
-            if active_window and active_window.width >= 500 and active_window.height >= 400:
+            active_title = str(getattr(active_window, "title", "") or "").lower()
+            if (
+                active_window
+                and "whatsapp" in active_title
+                and active_window.width >= 500
+                and active_window.height >= 400
+            ):
                 target_window = active_window
     except Exception:
         target_window = None
@@ -1804,16 +1829,15 @@ def focus_whatsapp_message_box():
         except Exception:
             pass
 
-    if target_window is not None:
-        click_x, click_y = get_whatsapp_composer_point(
-            target_window.left,
-            target_window.top,
-            target_window.width,
-            target_window.height,
-        )
-    else:
-        screen_width, screen_height = pyautogui.size()
-        click_x, click_y = get_whatsapp_composer_point(0, 0, screen_width, screen_height)
+    if target_window is None:
+        raise WhatsAppPasteError("לא הצלחתי לזהות את חלון WhatsApp ולמקד את שורת ההודעה.")
+
+    click_x, click_y = get_whatsapp_composer_point(
+        target_window.left,
+        target_window.top,
+        target_window.width,
+        target_window.height,
+    )
 
     pyautogui.click(click_x, click_y)
     time.sleep(0.8)
@@ -1825,7 +1849,7 @@ def automate_whatsapp_send_to_bot(file_paths, phone_number: str, bot_label: str)
         try:
             os.startfile("whatsapp:")
         except OSError as error:
-            raise RuntimeError("לא הצלחתי לפתוח את אפליקציית WhatsApp שמותקנת במחשב.") from error
+            raise WhatsAppPasteError("לא הצלחתי לפתוח את אפליקציית WhatsApp שמותקנת במחשב.") from error
 
     time.sleep(7.5)
     pyautogui.PAUSE = 0.4
@@ -1838,11 +1862,16 @@ def automate_whatsapp_send_to_bot(file_paths, phone_number: str, bot_label: str)
         pyautogui.press("enter")
         time.sleep(1.8)
     if file_paths:
-        set_files_to_clipboard(file_paths)
-        time.sleep(0.8)
-        focus_whatsapp_message_box()
-        pyautogui.hotkey("ctrl", "v")
-        time.sleep(3.2)
+        try:
+            set_files_to_clipboard(file_paths)
+            time.sleep(0.8)
+            focus_whatsapp_message_box()
+            pyautogui.hotkey("ctrl", "v")
+            time.sleep(3.2)
+        except WhatsAppPasteError:
+            raise
+        except Exception as error:
+            raise WhatsAppPasteError(f"לא הצלחתי להדביק את קובצי האודיו ב-WhatsApp: {error}") from error
 
 
 def send_audio_files_to_whatsapp_bot(file_paths, temp_dir: str, bot_config):
@@ -1852,14 +1881,14 @@ def send_audio_files_to_whatsapp_bot(file_paths, temp_dir: str, bot_config):
     try:
         automate_whatsapp_send_to_bot(mp3_paths, phone_number, bot_label)
         return WHATSAPP_PRIMARY_FORMAT
-    except Exception as mp3_error:
+    except WhatsAppPasteError as mp3_error:
         ogg_paths = prepare_whatsapp_audio_files(file_paths, temp_dir, WHATSAPP_FALLBACK_FORMAT)
         try:
             automate_whatsapp_send_to_bot(ogg_paths, phone_number, bot_label)
             return WHATSAPP_FALLBACK_FORMAT
-        except Exception as ogg_error:
-            raise RuntimeError(
-                "לא הצלחתי לשלוח את קבצי השמע ל-WhatsApp כ-MP3 וגם לא כ-OGG. "
+        except WhatsAppPasteError as ogg_error:
+            raise WhatsAppPasteError(
+                "לא הצלחתי להדביק את קובצי השמע ב-WhatsApp כ-MP3 וגם לא כ-OGG. "
                 f"MP3: {mp3_error}; OGG: {ogg_error}"
             ) from ogg_error
 
@@ -2073,6 +2102,10 @@ class CatAudioCutterApp:
         self.menu_ui_scale = 1.0
         self.settings_dialog = None
         self.random_message_job = None
+        self.hover_tooltip_job = None
+        self.hover_tooltip_window = None
+        self.hotspot_tooltip_texts = {}
+        self.whatsapp_notice_window = None
         self.last_saved_dir = None
         self.last_output_files = []
         self.last_transcript_text = ""
@@ -2169,10 +2202,34 @@ class CatAudioCutterApp:
         self.canvas_window_id = None
 
         self.create_mockup_hotspot("settings", 35, 35, 274, 183, self.open_settings_dialog)
-        self.create_mockup_hotspot("upload", 67, 262, 1015, 691, self.pick_audio_file)
+        self.create_mockup_hotspot(
+            "upload",
+            67,
+            262,
+            1015,
+            691,
+            self.pick_audio_file,
+            UPLOAD_TOOLTIP_TEXT,
+        )
         self.create_mockup_hotspot("player", 38, 716, 1030, 805, self.toggle_audio_preview)
-        self.create_mockup_hotspot("cut", 67, 822, 1015, 1252, self.start_cut_audio_only)
-        self.create_mockup_hotspot("transcribe", 75, 1356, 1018, 1788, self.start_transcribe_audio_now)
+        self.create_mockup_hotspot(
+            "cut",
+            67,
+            822,
+            1015,
+            1252,
+            self.start_cut_audio_only,
+            CUT_TOOLTIP_TEXT,
+        )
+        self.create_mockup_hotspot(
+            "transcribe",
+            75,
+            1356,
+            1018,
+            1788,
+            self.start_transcribe_audio_now,
+            TRANSCRIBE_TOOLTIP_TEXT,
+        )
 
         self.player_fill_item = self.main_canvas.create_rectangle(self.s(60), self.s(729), self.s(60), self.s(783), fill="#f4a9c7", outline="")
         self.player_time_canvas_item = self.main_canvas.create_text(
@@ -2242,12 +2299,79 @@ class CatAudioCutterApp:
     def sf(self, value: int) -> int:
         return max(7, int(round(value * self.menu_ui_scale)))
 
-    def create_mockup_hotspot(self, tag: str, x1: int, y1: int, x2: int, y2: int, command):
+    def create_mockup_hotspot(self, tag: str, x1: int, y1: int, x2: int, y2: int, command, tooltip_text=""):
         item = self.main_canvas.create_rectangle(self.s(x1), self.s(y1), self.s(x2), self.s(y2), fill="", outline="", tags=(tag, "hotspot"))
-        self.main_canvas.tag_bind(item, "<Button-1>", lambda _event: command())
-        self.main_canvas.tag_bind(item, "<Enter>", lambda _event: self.main_canvas.configure(cursor="hand2"))
-        self.main_canvas.tag_bind(item, "<Leave>", lambda _event: self.main_canvas.configure(cursor=""))
+        if tooltip_text:
+            self.hotspot_tooltip_texts[tag] = tooltip_text
+        self.main_canvas.tag_bind(
+            item,
+            "<Button-1>",
+            lambda _event: (self.hide_hover_tooltip(), command()),
+        )
+        self.main_canvas.tag_bind(
+            item,
+            "<Enter>",
+            lambda _event: (
+                self.main_canvas.configure(cursor="hand2"),
+                self.schedule_hover_tooltip(tooltip_text) if tooltip_text else None,
+            ),
+        )
+        self.main_canvas.tag_bind(
+            item,
+            "<Leave>",
+            lambda _event: (self.main_canvas.configure(cursor=""), self.hide_hover_tooltip()),
+        )
         return item
+
+    def schedule_hover_tooltip(self, tooltip_text: str):
+        self.hide_hover_tooltip()
+        self.hover_tooltip_job = self.root.after(
+            HOVER_TOOLTIP_DELAY_MS,
+            lambda: self.show_hover_tooltip(tooltip_text),
+        )
+
+    def show_hover_tooltip(self, tooltip_text: str):
+        self.hover_tooltip_job = None
+        if not tooltip_text or not self.root.winfo_exists():
+            return
+        self.hide_hover_tooltip()
+        tooltip = tk.Toplevel(self.root)
+        self.hover_tooltip_window = tooltip
+        tooltip.overrideredirect(True)
+        tooltip.attributes("-topmost", True)
+        frame = tk.Frame(
+            tooltip,
+            bg="white",
+            highlightbackground=STRONG_PINK,
+            highlightthickness=2,
+            padx=12,
+            pady=9,
+        )
+        frame.pack(fill="both", expand=True)
+        tk.Label(
+            frame,
+            text=tooltip_text,
+            bg="white",
+            fg=TEXT,
+            font=("Segoe UI", 10),
+            justify="right",
+            anchor="e",
+            wraplength=310,
+        ).pack()
+        tooltip.update_idletasks()
+        pointer_x = self.root.winfo_pointerx() + 18
+        pointer_y = self.root.winfo_pointery() + 18
+        max_x = max(0, self.root.winfo_screenwidth() - tooltip.winfo_reqwidth() - 12)
+        max_y = max(0, self.root.winfo_screenheight() - tooltip.winfo_reqheight() - 12)
+        tooltip.geometry(f"+{min(pointer_x, max_x)}+{min(pointer_y, max_y)}")
+
+    def hide_hover_tooltip(self):
+        if self.hover_tooltip_job:
+            self.root.after_cancel(self.hover_tooltip_job)
+            self.hover_tooltip_job = None
+        if self.hover_tooltip_window and self.hover_tooltip_window.winfo_exists():
+            self.hover_tooltip_window.destroy()
+        self.hover_tooltip_window = None
 
     def build_settings_dialog(self):
         self.settings_dialog = tk.Toplevel(self.root)
@@ -4306,6 +4430,22 @@ class CatAudioCutterApp:
                 and any(Path(path).suffix.lower() in AUDIO_EXTENSIONS and os.path.exists(path) for path in copied_files)
             )
 
+            if isinstance(error, WhatsAppPasteError) and has_saved_audio:
+                whatsapp_bot_config = settings.get("whatsapp_bot_config") or get_whatsapp_bot_config(
+                    self.whatsapp_bot_var.get()
+                )
+                self.root.after(
+                    0,
+                    lambda output_dir=output_dir, copied_files=copied_files, whatsapp_bot_config=whatsapp_bot_config: (
+                        self.finish_whatsapp_clipboard_fallback(
+                            copied_files,
+                            output_dir,
+                            whatsapp_bot_config,
+                        )
+                    ),
+                )
+                return
+
             self.root.after(
                 0,
                 lambda error_message=error_message, output_dir=output_dir, has_saved_audio=has_saved_audio: (
@@ -4332,6 +4472,79 @@ class CatAudioCutterApp:
                 self.last_output_files = copied_files
             elif output_dir and os.path.isdir(output_dir):
                 shutil.rmtree(output_dir, ignore_errors=True)
+
+    def finish_whatsapp_clipboard_fallback(self, copied_files, output_dir, whatsapp_bot_config):
+        self.last_saved_dir = output_dir
+        self.last_output_files = copied_files
+        self.set_processing_state(False)
+        self.set_progress(100)
+        self.set_status("קובצי האודיו הועתקו ללוח. אפשר להדביק אותם ידנית ב-WhatsApp.")
+        self.save_current_settings()
+        self.show_whatsapp_clipboard_notice(whatsapp_bot_config)
+
+    def show_whatsapp_clipboard_notice(self, whatsapp_bot_config):
+        if self.whatsapp_notice_window and self.whatsapp_notice_window.winfo_exists():
+            self.whatsapp_notice_window.destroy()
+
+        notice = tk.Toplevel(self.root)
+        self.whatsapp_notice_window = notice
+        notice.title("הדבקה ידנית ב-WhatsApp")
+        notice.configure(bg="#fff5fa")
+        notice.resizable(False, False)
+        notice.attributes("-topmost", True)
+        notice.transient(self.root)
+
+        frame = tk.Frame(
+            notice,
+            bg="#fff5fa",
+            highlightbackground=STRONG_PINK,
+            highlightthickness=2,
+            padx=18,
+            pady=15,
+        )
+        frame.pack(fill="both", expand=True)
+        tk.Label(
+            frame,
+            text=(
+                "קובצי התמלול הועתקו ללוח.\n"
+                "יש להקיש Control + V כדי להדביק בחלון הצ'אט, "
+                "או ללחוץ קליק ימני בעכבר ולבחור הדבק."
+            ),
+            bg="#fff5fa",
+            fg=TEXT,
+            font=("Segoe UI", 10),
+            justify="right",
+            wraplength=390,
+        ).pack(anchor="e")
+
+        bot_label = whatsapp_bot_config.get("label", "WhatsApp")
+        bot_phone = whatsapp_bot_config.get("phone", "")
+        link = tk.Label(
+            frame,
+            text=f"פתחי את הבוט ב-WhatsApp ({bot_label})",
+            bg="#fff5fa",
+            fg="#1264a3",
+            cursor="hand2",
+            font=("Segoe UI", 10, "underline"),
+        )
+        link.pack(anchor="e", pady=(9, 0))
+        link.bind(
+            "<Button-1>",
+            lambda _event: open_whatsapp_chat_by_phone(bot_phone),
+        )
+
+        notice.update_idletasks()
+        x = max(12, self.root.winfo_screenwidth() - notice.winfo_reqwidth() - 28)
+        y = max(12, self.root.winfo_screenheight() - notice.winfo_reqheight() - 70)
+        notice.geometry(f"+{x}+{y}")
+
+        def close_notice():
+            if notice.winfo_exists():
+                notice.destroy()
+            if self.whatsapp_notice_window is notice:
+                self.whatsapp_notice_window = None
+
+        notice.after(WHATSAPP_NOTICE_DURATION_MS, close_notice)
 
     def finish_processing(
         self,
@@ -4498,6 +4711,10 @@ class CatAudioCutterApp:
         self.temp_dir = None
 
     def on_close(self):
+        self.hide_hover_tooltip()
+        if self.whatsapp_notice_window and self.whatsapp_notice_window.winfo_exists():
+            self.whatsapp_notice_window.destroy()
+            self.whatsapp_notice_window = None
         self.save_current_settings()
         self.stop_audio_preview(close_player=True)
         self.cleanup_temp_dir()
