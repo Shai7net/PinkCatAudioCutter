@@ -182,8 +182,43 @@ default_whatsapp_bot = globals_dict['get_whatsapp_bot_config']('missing-option')
 if default_whatsapp_bot['phone'] != '972559571223':
     raise RuntimeError('self-test WhatsApp bot fallback failed')
 composer_point = globals_dict['get_whatsapp_composer_point'](100, 50, 1000, 700)
-if composer_point != (780, 682):
+if composer_point != (400, 708):
     raise RuntimeError('self-test WhatsApp composer position failed')
+capture_region = globals_dict['get_whatsapp_capture_region'](100, 50, 1000, 700)
+if capture_region != (380, 316, 700, 392):
+    raise RuntimeError('self-test WhatsApp capture region failed')
+context_paste_point = globals_dict['get_whatsapp_context_paste_point'](100, 50, 1000, 700)
+if context_paste_point != (480, 600):
+    raise RuntimeError('self-test WhatsApp context-menu paste position failed')
+from PIL import Image
+unchanged_a = Image.new('RGB', (20, 20), 'white')
+unchanged_b = Image.new('RGB', (20, 20), 'white')
+changed = Image.new('RGB', (20, 20), 'black')
+if globals_dict['calculate_image_change_ratio'](unchanged_a, unchanged_b) != 0:
+    raise RuntimeError('self-test WhatsApp unchanged image comparison failed')
+if globals_dict['calculate_image_change_ratio'](unchanged_a, changed) < 0.99:
+    raise RuntimeError('self-test WhatsApp changed image comparison failed')
+if os.environ.get('PINKCAT_CLIPBOARD_TEST') == '1':
+    original_clipboard_text = globals_dict['pyperclip'].paste()
+    try:
+        globals_dict['set_files_to_clipboard'](copied)
+        clipboard_paths = globals_dict['get_clipboard_file_paths']()
+        expected_paths = {os.path.normcase(os.path.normpath(path)) for path in copied}
+        actual_paths = {os.path.normcase(os.path.normpath(path)) for path in clipboard_paths}
+        if not expected_paths.issubset(actual_paths):
+            raise RuntimeError('self-test native FileDrop clipboard verification failed')
+        print('CLIPBOARD_FILEDROP_OK')
+    finally:
+        globals_dict['pyperclip'].copy(original_clipboard_text)
+if os.environ.get('PINKCAT_WHATSAPP_PASTE_TEST') == '1':
+    original_clipboard_text = globals_dict['pyperclip'].paste()
+    try:
+        bot_config = globals_dict['get_whatsapp_bot_config'](globals_dict['DEFAULT_WHATSAPP_BOT_OPTION'])
+        globals_dict['automate_whatsapp_send_to_bot']([copied[0]], bot_config['phone'], bot_config['label'])
+        print('WHATSAPP_PASTE_OK')
+    finally:
+        globals_dict['pyautogui'].press('esc')
+        globals_dict['pyperclip'].copy(original_clipboard_text)
 body, content_type = globals_dict['encode_multipart_form']({'model': 'test-model'}, 'file', copied[0])
 if b'test-model' not in body or 'multipart/form-data' not in content_type:
     raise RuntimeError('self-test multipart encoding failed')

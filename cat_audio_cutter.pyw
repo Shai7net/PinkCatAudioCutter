@@ -1761,22 +1761,197 @@ def write_summary_transcript(output_dir: str, transcript_path: str, summary_text
 
 
 def set_files_to_clipboard(file_paths):
-    escaped_paths = []
-    for path in file_paths:
-        escaped_paths.append("'" + path.replace("'", "''") + "'")
-    escaped = ",".join(escaped_paths)
-    powershell = (
-        "Add-Type -AssemblyName PresentationCore;"
-        f"$files=@({escaped});"
-        "$collection=New-Object System.Collections.Specialized.StringCollection;"
-        "foreach($file in $files){[void]$collection.Add($file)};"
-        "[System.Windows.Clipboard]::SetFileDropList($collection)"
-    )
-    subprocess.run(
-        ["powershell", "-NoProfile", "-STA", "-Command", powershell],
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        check=True,
-    )
+    if not hasattr(ctypes, "windll"):
+        raise WhatsAppPasteError("העתקת קבצים ללוח נתמכת כרגע רק ב-Windows.")
+
+    normalized_paths = [os.path.abspath(path) for path in file_paths if path and os.path.isfile(path)]
+    if not normalized_paths:
+        raise WhatsAppPasteError("לא נמצאו קבצים תקינים להעתקה ללוח.")
+
+    class Point(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    class DropFiles(ctypes.Structure):
+        _fields_ = [
+            ("pFiles", ctypes.c_uint32),
+            ("pt", Point),
+            ("fNC", ctypes.c_int32),
+            ("fWide", ctypes.c_int32),
+        ]
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    gm_moveable = 0x0002
+    gm_zeroinit = 0x0040
+    cf_hdrop = 15
+
+    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    user32.GetClipboardData.restype = ctypes.c_void_p
+    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    user32.SetClipboardData.restype = ctypes.c_void_p
+
+    path_payload = ("\0".join(normalized_paths) + "\0\0").encode("utf-16-le")
+    header = DropFiles()
+    header.pFiles = ctypes.sizeof(DropFiles)
+    header.fWide = 1
+    total_size = ctypes.sizeof(DropFiles) + len(path_payload)
+    file_handle = kernel32.GlobalAlloc(gm_moveable | gm_zeroinit, total_size)
+    if not file_handle:
+        raise WhatsAppPasteError("Windows לא הצליח להקצות זיכרון להעתקת הקבצים.")
+
+    file_pointer = kernel32.GlobalLock(file_handle)
+    if not file_pointer:
+        kernel32.GlobalFree(file_handle)
+        raise WhatsAppPasteError("Windows לא הצליח להכין את הקבצים ללוח.")
+    ctypes.memmove(file_pointer, ctypes.byref(header), ctypes.sizeof(DropFiles))
+    ctypes.memmove(file_pointer + ctypes.sizeof(DropFiles), path_payload, len(path_payload))
+    kernel32.GlobalUnlock(file_handle)
+
+    effect_handle = kernel32.GlobalAlloc(gm_moveable | gm_zeroinit, ctypes.sizeof(ctypes.c_uint32))
+    if not effect_handle:
+        kernel32.GlobalFree(file_handle)
+        raise WhatsAppPasteError("Windows לא הצליח להכין פעולת העתקה ללוח.")
+    effect_pointer = kernel32.GlobalLock(effect_handle)
+    if not effect_pointer:
+        kernel32.GlobalFree(file_handle)
+        kernel32.GlobalFree(effect_handle)
+        raise WhatsAppPasteError("Windows לא הצליח להכין את פעולת ההעתקה ללוח.")
+    copy_effect = ctypes.c_uint32(5)
+    ctypes.memmove(effect_pointer, ctypes.byref(copy_effect), ctypes.sizeof(copy_effect))
+    kernel32.GlobalUnlock(effect_handle)
+
+    clipboard_opened = False
+    for _attempt in range(20):
+        if user32.OpenClipboard(None):
+            clipboard_opened = True
+            break
+        time.sleep(0.05)
+    if not clipboard_opened:
+        kernel32.GlobalFree(file_handle)
+        kernel32.GlobalFree(effect_handle)
+        raise WhatsAppPasteError("הלוח של Windows תפוס כרגע ולא ניתן להעתיק אליו קבצים.")
+
+    file_transferred = False
+    effect_transferred = False
+    try:
+        if not user32.EmptyClipboard():
+            raise WhatsAppPasteError("לא הצלחתי לפנות את הלוח לפני העתקת הקבצים.")
+        if not user32.SetClipboardData(cf_hdrop, file_handle):
+            raise WhatsAppPasteError("לא הצלחתי להעתיק את רשימת הקבצים ללוח.")
+        file_transferred = True
+        preferred_effect_format = user32.RegisterClipboardFormatW("Preferred DropEffect")
+        if preferred_effect_format and user32.SetClipboardData(preferred_effect_format, effect_handle):
+            effect_transferred = True
+    finally:
+        user32.CloseClipboard()
+        if not file_transferred:
+            kernel32.GlobalFree(file_handle)
+        if not effect_transferred:
+            kernel32.GlobalFree(effect_handle)
+
+    clipboard_paths = get_clipboard_file_paths()
+    expected = {os.path.normcase(os.path.normpath(path)) for path in normalized_paths}
+    actual = {os.path.normcase(os.path.normpath(path)) for path in clipboard_paths}
+    if not expected.issubset(actual):
+        raise WhatsAppPasteError("הקבצים לא הופיעו בלוח של Windows לאחר פעולת ההעתקה.")
+
+
+def get_clipboard_file_paths():
+    if not hasattr(ctypes, "windll"):
+        return []
+    user32 = ctypes.windll.user32
+    shell32 = ctypes.windll.shell32
+    cf_hdrop = 15
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    user32.GetClipboardData.restype = ctypes.c_void_p
+    shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint]
+    shell32.DragQueryFileW.restype = ctypes.c_uint
+    clipboard_opened = False
+    for _attempt in range(20):
+        if user32.OpenClipboard(None):
+            clipboard_opened = True
+            break
+        time.sleep(0.05)
+    if not clipboard_opened:
+        return []
+    try:
+        drop_handle = user32.GetClipboardData(cf_hdrop)
+        if not drop_handle:
+            return []
+        file_count = shell32.DragQueryFileW(drop_handle, 0xFFFFFFFF, None, 0)
+        paths = []
+        for index in range(file_count):
+            length = shell32.DragQueryFileW(drop_handle, index, None, 0)
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            shell32.DragQueryFileW(drop_handle, index, buffer, length + 1)
+            paths.append(buffer.value)
+        return paths
+    finally:
+        user32.CloseClipboard()
+
+
+def copy_files_to_clipboard_with_explorer(file_paths):
+    normalized_paths = [os.path.abspath(path) for path in file_paths if path and os.path.isfile(path)]
+    if not normalized_paths:
+        raise WhatsAppPasteError("לא נמצאו קבצים תקינים להעתקה דרך סייר הקבצים.")
+    parent_folders = {os.path.normcase(os.path.dirname(path)) for path in normalized_paths}
+    if len(parent_folders) != 1:
+        raise WhatsAppPasteError("כדי להעתיק דרך סייר הקבצים, כל המקטעים צריכים להיות באותה תיקייה.")
+
+    folder_path = os.path.dirname(normalized_paths[0])
+    folder_name = os.path.basename(folder_path)
+    explorer_window = None
+    os.startfile(folder_path)
+    try:
+        for _attempt in range(20):
+            time.sleep(0.25)
+            windows = [
+                window
+                for window in pyautogui.getWindowsWithTitle(folder_name)
+                if window.width >= 500 and window.height >= 350
+            ]
+            if windows:
+                explorer_window = max(windows, key=lambda window: window.width * window.height)
+                break
+        if explorer_window is None:
+            raise WhatsAppPasteError("סייר הקבצים נפתח, אבל לא הצלחתי לזהות את חלון המקטעים.")
+
+        if explorer_window.isMinimized:
+            explorer_window.restore()
+        try:
+            explorer_window.activate()
+        except Exception:
+            pass
+        time.sleep(0.8)
+        pyautogui.click(
+            explorer_window.left + int(explorer_window.width * 0.58),
+            explorer_window.top + int(explorer_window.height * 0.48),
+        )
+        pyautogui.hotkey("ctrl", "a")
+        time.sleep(0.3)
+        pyautogui.hotkey("ctrl", "c")
+        time.sleep(1.2)
+
+        clipboard_paths = get_clipboard_file_paths()
+        expected = {os.path.normcase(os.path.normpath(path)) for path in normalized_paths}
+        actual = {os.path.normcase(os.path.normpath(path)) for path in clipboard_paths}
+        if not expected.issubset(actual):
+            raise WhatsAppPasteError("סייר הקבצים לא העתיק את כל מקטעי האודיו ללוח.")
+    finally:
+        if explorer_window is not None:
+            try:
+                explorer_window.close()
+                time.sleep(0.8)
+            except Exception:
+                pass
 
 
 def open_whatsapp_chat_by_phone(phone_number: str):
@@ -1792,13 +1967,52 @@ def open_whatsapp_chat_by_phone(phone_number: str):
 
 def get_whatsapp_composer_point(left: int, top: int, width: int, height: int):
     return (
-        left + int(width * 0.68),
-        top + max(40, height - 68),
+        left + int(width * 0.30),
+        top + max(40, height - 42),
     )
+
+
+def get_whatsapp_capture_region(left: int, top: int, width: int, height: int):
+    return (
+        left + int(width * 0.28),
+        top + int(height * 0.38),
+        max(120, int(width * 0.70)),
+        max(100, int(height * 0.56)),
+    )
+
+
+def get_whatsapp_context_paste_point(left: int, top: int, width: int, height: int):
+    composer_x, composer_y = get_whatsapp_composer_point(left, top, width, height)
+    return (
+        composer_x + 80,
+        composer_y - 108,
+    )
+
+
+def calculate_image_change_ratio(before_image, after_image, threshold: int = 18) -> float:
+    if before_image is None or after_image is None:
+        return 0.0
+    if before_image.size != after_image.size:
+        return 1.0
+    from PIL import ImageChops
+
+    difference = ImageChops.difference(before_image.convert("RGB"), after_image.convert("RGB")).convert("L")
+    histogram = difference.histogram()
+    changed_pixels = sum(histogram[max(0, threshold):])
+    total_pixels = max(1, before_image.width * before_image.height)
+    return changed_pixels / total_pixels
+
+
+def capture_whatsapp_region(window_rect):
+    try:
+        return pyautogui.screenshot(region=get_whatsapp_capture_region(*window_rect))
+    except Exception:
+        return None
 
 
 def focus_whatsapp_message_box():
     target_window = None
+    selection_source = "none"
     try:
         windows = [
             window
@@ -1807,16 +2021,18 @@ def focus_whatsapp_message_box():
         ]
         if windows:
             target_window = max(windows, key=lambda window: window.width * window.height)
+            selection_source = "whatsapp-title"
         else:
             active_window = pyautogui.getActiveWindow()
             active_title = str(getattr(active_window, "title", "") or "").lower()
             if (
                 active_window
-                and "whatsapp" in active_title
+                and APP_TITLE.lower() not in active_title
                 and active_window.width >= 500
                 and active_window.height >= 400
             ):
                 target_window = active_window
+                selection_source = "active-window"
     except Exception:
         target_window = None
 
@@ -1841,6 +2057,19 @@ def focus_whatsapp_message_box():
 
     pyautogui.click(click_x, click_y)
     time.sleep(0.8)
+    active_after_click = pyautogui.getActiveWindow()
+    target_handle = getattr(target_window, "_hWnd", None)
+    active_handle = getattr(active_after_click, "_hWnd", None)
+    return {
+        "rect": (
+            target_window.left,
+            target_window.top,
+            target_window.width,
+            target_window.height,
+        ),
+        "source": selection_source,
+        "active_match": bool(target_handle and active_handle and target_handle == active_handle),
+    }
 
 
 def automate_whatsapp_send_to_bot(file_paths, phone_number: str, bot_label: str):
@@ -1863,11 +2092,41 @@ def automate_whatsapp_send_to_bot(file_paths, phone_number: str, bot_label: str)
         time.sleep(1.8)
     if file_paths:
         try:
-            set_files_to_clipboard(file_paths)
+            try:
+                copy_files_to_clipboard_with_explorer(file_paths)
+            except WhatsAppPasteError:
+                set_files_to_clipboard(file_paths)
             time.sleep(0.8)
-            focus_whatsapp_message_box()
-            pyautogui.hotkey("ctrl", "v")
-            time.sleep(3.2)
+            window_info = focus_whatsapp_message_box()
+            window_rect = window_info["rect"]
+            before_paste = capture_whatsapp_region(window_rect)
+            composer_x, composer_y = get_whatsapp_composer_point(*window_rect)
+            pyautogui.rightClick(composer_x, composer_y)
+            time.sleep(0.7)
+            paste_x, paste_y = get_whatsapp_context_paste_point(*window_rect)
+            pyautogui.click(paste_x, paste_y)
+            time.sleep(4.0)
+            after_paste = capture_whatsapp_region(window_rect)
+            if before_paste is not None and after_paste is not None:
+                change_ratio = calculate_image_change_ratio(before_paste, after_paste)
+                if change_ratio < 0.012:
+                    focus_whatsapp_message_box()
+                    pyautogui.hotkey("ctrl", "v")
+                    time.sleep(4.0)
+                    after_paste = capture_whatsapp_region(window_rect)
+                    change_ratio = calculate_image_change_ratio(before_paste, after_paste)
+                if change_ratio < 0.012:
+                    focus_whatsapp_message_box()
+                    pyautogui.hotkey("shift", "insert")
+                    time.sleep(4.0)
+                    after_paste = capture_whatsapp_region(window_rect)
+                    change_ratio = calculate_image_change_ratio(before_paste, after_paste)
+                if change_ratio < 0.012:
+                    raise WhatsAppPasteError(
+                        "WhatsApp נפתח, אבל לא זוהה קובץ מצורף אחרי פעולת ההדבקה "
+                        f"(שינוי חזותי: {change_ratio:.2%}, מקור חלון: {window_info['source']}, "
+                        f"חלון פעיל תואם: {window_info['active_match']})."
+                    )
         except WhatsAppPasteError:
             raise
         except Exception as error:
