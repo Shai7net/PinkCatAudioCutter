@@ -46,7 +46,7 @@
 - במנוע `Azure Cloud Whisper`, הכלי מייצר קודם WAV זמני מונו 16k ואז שולח אותו ל-Azure OpenAI Whisper. זה מצב בחירה מפורשת, וברירת המחדל נשארת תמלול מקומי.
 - בתפריט התמלול יש כפתור `בדוק/הורד מודל` שמכין את המודל מראש ומציג התקדמות הורדה/טעינה.
 - אפשר לשמור כמה מפתחות API בקובץ `api_keys.json`, לפי ספק, או להדביק אותם ידנית בממשק.
-- עבור Azure OpenAI צריך להשתמש בבלוק `azure_openai` מובנה עם `api_key`, `azure_endpoint`, `deployment_name`, ו-`api_version`. אפשר לשמור כמה בלוקים, והכלי ינסה את הבא אם יש quota/rate-limit או שגיאת זמינות.
+- עבור Azure OpenAI אפשר למלא את שדות Azure בממשק אחרי בחירת `Azure Cloud Whisper`, או להשתמש בבלוק `azure_openai` מובנה עם `api_key`, `azure_endpoint`, `deployment_name`, ו-`api_version`. אפשר לשמור כמה מפתחות, והכלי ינסה את הבא אם יש quota/rate-limit או שגיאת זמינות.
 - אפשר להתחיל מ-`api_keys.example.json` כתבנית, אבל לא להכניס מפתחות אמיתיים לגיט.
 - `gemini_api_key.txt` עדיין נתמך למפתח Gemini יחיד לצורך תאימות לאחור.
 - תיקון טקסט אחרי תמלול מקומי שולח רק את טקסט התמלול, לא את קובץ האודיו.

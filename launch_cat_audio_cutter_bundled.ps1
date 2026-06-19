@@ -241,9 +241,25 @@ if app.cut_button.cget('text') != '\u05d4\u05e4\u05e2\u05dc':
     raise RuntimeError('self-test UI did not create the neutral run button')
 app.transcription_engine_var.set('Azure Cloud Whisper')
 app.toggle_transcription_engine_settings()
+app.root.update_idletasks()
 local_model_state = app.local_model_combo.cget('state')
 if local_model_state != 'disabled' and not app.local_model_combo.instate(['disabled']):
     raise RuntimeError('self-test UI did not disable the local model selector for Azure engine: ' + str(local_model_state))
+if not app.azure_openai_frame.winfo_ismapped():
+    raise RuntimeError('self-test UI did not show Azure settings for Azure engine')
+app.azure_endpoint_var.set('https://example-resource.openai.azure.com')
+app.azure_deployment_var.set('whisper')
+app.azure_api_version_var.set('2024-02-01')
+app.azure_api_key_entry.delete('1.0', 'end')
+app.azure_api_key_entry.insert('1.0', 'azure-key-ui-a\nazure-key-ui-b')
+azure_form_configs = app.get_current_azure_openai_configs()
+if len(azure_form_configs) != 2 or azure_form_configs[1]['api_key'] != 'azure-key-ui-b':
+    raise RuntimeError('self-test UI did not build Azure configs from form values')
+app.transcription_engine_var.set('Local Whisper - \u05d1\u05de\u05d7\u05e9\u05d1')
+app.toggle_transcription_engine_settings()
+app.root.update_idletasks()
+if app.azure_openai_frame.winfo_ismapped():
+    raise RuntimeError('self-test UI did not hide Azure settings for local engine')
 app.root.destroy()
 shutil.rmtree(test_root, ignore_errors=True)
 print('SELFTEST_OK')

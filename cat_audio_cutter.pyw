@@ -302,6 +302,26 @@ def read_azure_openai_configs():
     return normalize_azure_openai_configs(store.get(AZURE_OPENAI_CONFIG_KEY, []))
 
 
+def build_azure_openai_configs_from_values(api_keys, azure_endpoint: str, deployment_name: str, api_version: str):
+    return normalize_azure_openai_configs(
+        [
+            {
+                "api_key": api_key,
+                "azure_endpoint": azure_endpoint,
+                "deployment_name": deployment_name,
+                "api_version": api_version,
+            }
+            for api_key in parse_api_key_lines("\n".join(api_keys or []))
+        ]
+    )
+
+
+def write_azure_openai_configs(configs):
+    store = load_api_key_store()
+    store[AZURE_OPENAI_CONFIG_KEY] = normalize_azure_openai_configs(configs)
+    save_api_key_store(store)
+
+
 def write_api_keys_for_provider(provider: str, keys):
     provider = (provider or "").strip()
     if not provider or provider == AZURE_OPENAI_CONFIG_KEY:
@@ -1779,6 +1799,21 @@ class CatAudioCutterApp:
         self.external_api_key_var = tk.StringVar(
             value="\n".join(read_api_keys_for_provider(self.active_external_provider_value))
         )
+        azure_openai_configs = read_azure_openai_configs()
+        azure_primary_config = azure_openai_configs[0] if azure_openai_configs else {}
+        self.azure_endpoint_var = tk.StringVar(
+            value=azure_primary_config.get("azure_endpoint") or setting("azure_endpoint", "")
+        )
+        self.azure_deployment_var = tk.StringVar(
+            value=azure_primary_config.get("deployment_name") or setting("azure_deployment_name", DEFAULT_AZURE_OPENAI_DEPLOYMENT_NAME)
+        )
+        self.azure_api_version_var = tk.StringVar(
+            value=azure_primary_config.get("api_version") or setting("azure_api_version", DEFAULT_AZURE_OPENAI_API_VERSION)
+        )
+        self.azure_api_keys_var = tk.StringVar(
+            value="\n".join(config["api_key"] for config in azure_openai_configs)
+        )
+        self.azure_openai_form_dirty = False
         self.empowering_messages_enabled_var = tk.BooleanVar(value=setting("empowering_messages_enabled", True))
         self.status_var = tk.StringVar(value="מחכה לקובץ שמע")
         self.progress_var = tk.DoubleVar(value=0)
@@ -2206,6 +2241,87 @@ class CatAudioCutterApp:
             justify="left",
         ).pack(anchor="w", pady=(8, 0))
 
+        self.azure_openai_frame = tk.Frame(self.local_transcription_frame, bg=CARD)
+        azure_grid = tk.Frame(self.azure_openai_frame, bg=CARD)
+        azure_grid.pack(fill="x", pady=(10, 0))
+        tk.Label(azure_grid, text="Azure endpoint", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=4)
+        self.azure_endpoint_entry = tk.Entry(
+            azure_grid,
+            textvariable=self.azure_endpoint_var,
+            font=("Segoe UI", 9),
+            bg="white",
+            fg=TEXT,
+            relief="flat",
+        )
+        self.azure_endpoint_entry.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(10, 0), ipady=6, pady=4)
+        tk.Label(azure_grid, text="Deployment", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w", pady=4)
+        tk.Entry(
+            azure_grid,
+            textvariable=self.azure_deployment_var,
+            font=("Segoe UI", 9),
+            bg="white",
+            fg=TEXT,
+            relief="flat",
+        ).grid(row=1, column=1, sticky="ew", padx=(10, 0), ipady=6, pady=4)
+        tk.Label(azure_grid, text="API version", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=4)
+        tk.Entry(
+            azure_grid,
+            textvariable=self.azure_api_version_var,
+            font=("Segoe UI", 9),
+            bg="white",
+            fg=TEXT,
+            relief="flat",
+        ).grid(row=2, column=1, sticky="ew", padx=(10, 0), ipady=6, pady=4)
+        tk.Label(azure_grid, text="Azure API keys", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).grid(row=3, column=0, sticky="nw", pady=4)
+        self.azure_api_key_entry = tk.Text(
+            azure_grid,
+            height=4,
+            font=("Segoe UI", 9),
+            bg="white",
+            fg=TEXT,
+            relief="flat",
+            wrap="none",
+        )
+        self.azure_api_key_entry.grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=4)
+        self.azure_api_key_entry.insert("1.0", self.azure_api_keys_var.get())
+        self.azure_api_key_entry.bind("<<Modified>>", self.on_azure_text_modified)
+        ttk.Button(
+            azure_grid,
+            text="שמור Azure",
+            command=lambda: self.save_current_azure_openai_configs(silent=False, force=True),
+            style="Pink.TButton",
+            width=12,
+        ).grid(row=3, column=2, sticky="new", padx=(8, 0), pady=4)
+        ttk.Button(
+            azure_grid,
+            text="טען מהקובץ",
+            command=self.load_azure_openai_configs_from_file,
+            style="Pink.TButton",
+            width=12,
+        ).grid(row=4, column=1, sticky="w", padx=(10, 0), pady=(2, 4))
+        ttk.Button(
+            azure_grid,
+            text="פתח קובץ מפתחות",
+            command=self.open_api_key_file,
+            style="Pink.TButton",
+            width=14,
+        ).grid(row=4, column=2, sticky="ew", padx=(8, 0), pady=(2, 4))
+        azure_grid.columnconfigure(1, weight=1)
+        tk.Label(
+            self.azure_openai_frame,
+            text=(
+                "שימי כאן את ה-Endpoint של Azure, שם ה-Deployment של Whisper, גרסת API, ומפתח אחד בכל שורה. "
+                "אם יש כמה מפתחות לאותו Azure resource, הכלי ינסה אותם לפי הסדר."
+            ),
+            bg=CARD,
+            fg=TEXT,
+            font=("Segoe UI", 9),
+            wraplength=700,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 0))
+        for variable in (self.azure_endpoint_var, self.azure_deployment_var, self.azure_api_version_var):
+            variable.trace_add("write", lambda *_args: self.mark_azure_openai_form_dirty())
+
         self.external_transcription_frame = tk.Frame(section, bg=CARD)
         external_grid = tk.Frame(self.external_transcription_frame, bg=CARD)
         external_grid.pack(fill="x")
@@ -2420,6 +2536,71 @@ class CatAudioCutterApp:
         if not silent:
             self.set_status(f"שמרתי {len(keys)} מפתחות API מקומיים עבור הספק הנוכחי.")
 
+    def mark_azure_openai_form_dirty(self):
+        self.azure_openai_form_dirty = True
+
+    def on_azure_text_modified(self, _event=None):
+        if hasattr(self, "azure_api_key_entry") and self.azure_api_key_entry.edit_modified():
+            self.mark_azure_openai_form_dirty()
+            self.azure_api_key_entry.edit_modified(False)
+        return None
+
+    def get_current_azure_api_keys(self):
+        if hasattr(self, "azure_api_key_entry"):
+            raw_text = self.azure_api_key_entry.get("1.0", "end")
+        else:
+            raw_text = self.azure_api_keys_var.get()
+        return parse_api_key_lines(raw_text)
+
+    def get_current_azure_openai_configs(self):
+        return build_azure_openai_configs_from_values(
+            self.get_current_azure_api_keys(),
+            self.azure_endpoint_var.get().strip(),
+            self.azure_deployment_var.get().strip() or DEFAULT_AZURE_OPENAI_DEPLOYMENT_NAME,
+            self.azure_api_version_var.get().strip() or DEFAULT_AZURE_OPENAI_API_VERSION,
+        )
+
+    def set_azure_openai_form_configs(self, configs):
+        azure_configs = normalize_azure_openai_configs(configs)
+        primary = azure_configs[0] if azure_configs else {}
+        self.azure_endpoint_var.set(primary.get("azure_endpoint", ""))
+        self.azure_deployment_var.set(primary.get("deployment_name", DEFAULT_AZURE_OPENAI_DEPLOYMENT_NAME))
+        self.azure_api_version_var.set(primary.get("api_version", DEFAULT_AZURE_OPENAI_API_VERSION))
+        key_text = "\n".join(config["api_key"] for config in azure_configs)
+        self.azure_api_keys_var.set(key_text)
+        if hasattr(self, "azure_api_key_entry"):
+            self.azure_api_key_entry.delete("1.0", "end")
+            self.azure_api_key_entry.insert("1.0", key_text)
+            self.azure_api_key_entry.edit_modified(False)
+        self.azure_openai_form_dirty = False
+
+    def save_current_azure_openai_configs(self, silent=False, force=False):
+        if not force and not self.azure_openai_form_dirty:
+            return
+        configs = self.get_current_azure_openai_configs()
+        if force and not configs:
+            if not silent:
+                messagebox.showinfo(
+                    "Azure OpenAI",
+                    "כדי לשמור Azure צריך למלא endpoint ומפתח API אחד לפחות.",
+                )
+            return
+        write_azure_openai_configs(configs)
+        self.azure_openai_form_dirty = False
+        if not silent:
+            self.set_status(f"שמרתי {len(configs)} הגדרות Azure OpenAI Whisper בקובץ המפתחות.")
+
+    def load_azure_openai_configs_from_file(self):
+        configs = read_azure_openai_configs()
+        if not configs:
+            messagebox.showinfo(
+                "Azure OpenAI",
+                f"לא מצאתי הגדרות Azure OpenAI תקינות בקובץ:\n{get_api_keys_file_path()}",
+            )
+            return
+        self.set_azure_openai_form_configs(configs)
+        self.set_status(f"טענתי {len(configs)} הגדרות Azure OpenAI מהקובץ המקומי.")
+
     def collect_settings(self):
         time_ranges = self.times_text.get("1.0", "end").strip() if hasattr(self, "times_text") else self.time_ranges_var.get()
         return {
@@ -2434,6 +2615,9 @@ class CatAudioCutterApp:
             "transcription_mode": self.transcription_mode_var.get(),
             "transcription_engine": get_transcription_engine_value(self.transcription_engine_var.get()),
             "local_model_label": self.local_model_var.get(),
+            "azure_endpoint": self.azure_endpoint_var.get().strip(),
+            "azure_deployment_name": self.azure_deployment_var.get().strip(),
+            "azure_api_version": self.azure_api_version_var.get().strip(),
             "improve_local_with_gemini": self.improve_local_transcript_with_gemini_var.get(),
             "add_professional_summary": self.add_professional_summary_var.get(),
             "external_provider": get_external_provider_value(self.external_provider_var.get()),
@@ -2446,6 +2630,7 @@ class CatAudioCutterApp:
     def save_current_settings(self):
         try:
             self.save_current_api_keys(silent=True)
+            self.save_current_azure_openai_configs(silent=True)
             save_app_settings(self.collect_settings())
         except OSError:
             pass
@@ -2627,12 +2812,14 @@ class CatAudioCutterApp:
         if engine == TRANSCRIPTION_ENGINE_AZURE_OPENAI:
             self.local_model_combo.configure(state="disabled")
             self.local_model_download_button.configure(state="disabled")
+            self.azure_openai_frame.pack(fill="x", pady=(8, 0))
             self.transcription_engine_note_var.set(
                 "Azure Cloud Whisper מתמלל בענן במקום המודל המקומי. לפני השליחה הכלי מייצר בתיקייה זמנית "
                 "קובץ WAV מונו 16k כדי למנוע בעיות נתיב/Unicode ולשמור על יציבות. תיקון וסיכום API עדיין "
                 "מקבלים רק טקסט, לא אודיו."
             )
         else:
+            self.azure_openai_frame.pack_forget()
             self.local_model_combo.configure(state="readonly")
             self.local_model_download_button.configure(state="normal")
             self.transcription_engine_note_var.set(
@@ -3009,11 +3196,18 @@ class CatAudioCutterApp:
         local_model_name = get_local_model_name(self.local_model_var.get())
         azure_openai_configs = []
         if transcription_mode in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL} and transcription_engine == TRANSCRIPTION_ENGINE_AZURE_OPENAI:
-            azure_openai_configs = read_azure_openai_configs()
+            azure_openai_configs = (
+                self.get_current_azure_openai_configs()
+                if self.azure_openai_form_dirty
+                else read_azure_openai_configs()
+            )
+            if not azure_openai_configs:
+                azure_openai_configs = self.get_current_azure_openai_configs()
             if not azure_openai_configs:
                 raise ValueError(
                     "בחרת Azure Cloud Whisper, אבל לא נמצאו הגדרות Azure OpenAI תקינות.\n\n"
-                    f"הוסיפי בלוק azure_openai בקובץ:\n{get_api_keys_file_path()}"
+                    "מלאי בממשק את Azure endpoint, Deployment, API version ומפתח אחד לפחות, "
+                    f"או הוסיפי בלוק azure_openai בקובץ:\n{get_api_keys_file_path()}"
                 )
 
         external_provider = get_external_provider_value(self.external_provider_var.get())
