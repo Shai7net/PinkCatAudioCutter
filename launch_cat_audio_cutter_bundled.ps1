@@ -305,6 +305,33 @@ if not app.whatsapp_notice_window or not app.whatsapp_notice_window.winfo_exists
     raise RuntimeError('self-test WhatsApp clipboard notice did not open')
 app.whatsapp_notice_window.destroy()
 app.whatsapp_notice_window = None
+result_dialog = globals_dict['ResultDialog'](app.root, output_dir)
+app.root.update_idletasks()
+expected_result_x = (result_dialog.winfo_screenwidth() - result_dialog.winfo_width()) // 2
+expected_result_y = (result_dialog.winfo_screenheight() - result_dialog.winfo_height()) // 2
+if abs(result_dialog.winfo_x() - expected_result_x) > 20 or abs(result_dialog.winfo_y() - expected_result_y) > 20:
+    raise RuntimeError('self-test result dialog was not centered on screen')
+result_dialog.choose('close')
+app.show_whatsapp_transfer_dialog('self-test bot')
+app.root.update_idletasks()
+if not app.whatsapp_transfer_dialog or not app.whatsapp_transfer_dialog.winfo_exists():
+    raise RuntimeError('self-test WhatsApp transfer dialog did not open')
+if not app.whatsapp_transfer_message_var.get().strip():
+    raise RuntimeError('self-test WhatsApp transfer dialog message is missing')
+expected_transfer_x = (
+    app.whatsapp_transfer_dialog.winfo_screenwidth() - app.whatsapp_transfer_dialog.winfo_width()
+) // 2
+expected_transfer_y = (
+    app.whatsapp_transfer_dialog.winfo_screenheight() - app.whatsapp_transfer_dialog.winfo_height()
+) // 2
+if (
+    abs(app.whatsapp_transfer_dialog.winfo_x() - expected_transfer_x) > 20
+    or abs(app.whatsapp_transfer_dialog.winfo_y() - expected_transfer_y) > 20
+):
+    raise RuntimeError('self-test WhatsApp transfer dialog was not centered on screen')
+app.hide_whatsapp_transfer_dialog()
+if app.whatsapp_transfer_dialog is not None:
+    raise RuntimeError('self-test WhatsApp transfer dialog did not close cleanly')
 if len(app.whatsapp_bot_combo.cget('values')) < 2:
     raise RuntimeError('self-test UI did not create the WhatsApp bot choices')
 if app.settings_notebook.index('end') < 4:

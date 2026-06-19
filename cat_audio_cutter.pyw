@@ -574,6 +574,15 @@ def format_player_time(milliseconds: int) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
+def center_toplevel_on_screen(window, width: int = None, height: int = None):
+    window.update_idletasks()
+    target_width = width or window.winfo_reqwidth()
+    target_height = height or window.winfo_reqheight()
+    x = max(0, (window.winfo_screenwidth() - target_width) // 2)
+    y = max(0, (window.winfo_screenheight() - target_height) // 2)
+    window.geometry(f"{target_width}x{target_height}+{x}+{y}")
+
+
 def parse_ranges_input(ranges_text: str):
     ranges = []
     normalized = ranges_text.replace(",", "\n").replace(";", "\n")
@@ -2239,48 +2248,160 @@ class ResultDialog(tk.Toplevel):
         self.result = None
         self.folder_path = folder_path
         self.transcript_path = transcript_path
-        self.configure(bg=PANEL)
+        self.configure(bg=STRONG_PINK)
         self.resizable(False, False)
         self.transient(master)
-        self.grab_set()
-
-        wrapper = tk.Frame(self, bg=PANEL, padx=24, pady=22)
+        outer = tk.Frame(self, bg=STRONG_PINK, padx=2, pady=2)
+        outer.pack(fill="both", expand=True)
+        wrapper = tk.Frame(outer, bg="#fff9fc", padx=24, pady=22)
         wrapper.pack(fill="both", expand=True)
 
+        header = tk.Frame(wrapper, bg=SOFT_PINK, padx=16, pady=13)
+        header.pack(fill="x", pady=(0, 14))
         tk.Label(
-            wrapper,
+            header,
             text="הפעולה הסתיימה בהצלחה",
-            bg=PANEL,
-            fg=TEXT,
-            font=("Segoe UI", 15, "bold"),
-        ).pack(pady=(0, 10))
-
+            bg=SOFT_PINK,
+            fg=DARK_PINK,
+            font=("Segoe UI", 17, "bold"),
+        ).pack()
         tk.Label(
-            wrapper,
-            text=f"הקבצים כבר נשמרו כאן:\n{folder_path}",
-            bg=PANEL,
+            header,
+            text="הקבצים מוכנים. בחרי מה לעשות עכשיו",
+            bg=SOFT_PINK,
             fg=TEXT,
             font=("Segoe UI", 10),
-            justify="center",
-            wraplength=420,
-        ).pack(pady=(0, 16))
+        ).pack(pady=(3, 0))
 
-        button_row = tk.Frame(wrapper, bg=PANEL)
+        location_panel = tk.Frame(
+            wrapper,
+            bg="white",
+            highlightbackground="#ffb6d5",
+            highlightthickness=1,
+            padx=14,
+            pady=11,
+        )
+        location_panel.pack(fill="x", pady=(0, 12))
+        tk.Label(
+            location_panel,
+            text="תיקיית השמירה",
+            bg="white",
+            fg=DARK_PINK,
+            font=("Segoe UI", 10, "bold"),
+            anchor="e",
+        ).pack(fill="x")
+        tk.Label(
+            location_panel,
+            text=folder_path,
+            bg="white",
+            fg=TEXT,
+            font=("Segoe UI", 9),
+            justify="right",
+            anchor="e",
+            wraplength=470,
+        ).pack(fill="x", pady=(4, 0))
+
+        whatsapp_panel = tk.Frame(
+            wrapper,
+            bg="#edfafd",
+            highlightbackground=TEAL,
+            highlightthickness=2,
+            padx=14,
+            pady=11,
+        )
+        whatsapp_panel.pack(fill="x", pady=(0, 14))
+        tk.Label(
+            whatsapp_panel,
+            text="העברה ישירה לבוט ב-WhatsApp",
+            bg="#edfafd",
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold"),
+            anchor="e",
+        ).pack(fill="x")
+        tk.Label(
+            whatsapp_panel,
+            text=(
+                "היישום יפתח את הבוט, יעביר אליו את קובצי האודיו ויוודא שהם הופיעו בשורת ההודעה. "
+                "בסיום נשאר רק ללחוץ Enter בחלון WhatsApp."
+            ),
+            bg="#edfafd",
+            fg=TEXT,
+            font=("Segoe UI", 9),
+            justify="right",
+            anchor="e",
+            wraplength=470,
+        ).pack(fill="x", pady=(4, 0))
+
+        button_row = tk.Frame(wrapper, bg="#fff9fc")
         button_row.pack(fill="x")
 
-        ttk.Button(button_row, text="פתחי את התיקייה", command=lambda: self.choose("open_folder")).pack(fill="x", pady=4)
+        tk.Button(
+            button_row,
+            text="פתחי את תיקיית השמירה",
+            command=lambda: self.choose("open_folder"),
+            bg="#ffd7e8",
+            fg=TEXT,
+            activebackground="#ffc6df",
+            relief="flat",
+            cursor="hand2",
+            font=("Segoe UI", 10, "bold"),
+            pady=8,
+        ).pack(fill="x", pady=4)
         if transcript_path:
-            ttk.Button(button_row, text="פתחי את קובץ התמלול", command=lambda: self.choose("open_transcript")).pack(fill="x", pady=4)
-        ttk.Button(button_row, text="פתחי את בוט התמלול ב-WhatsApp", command=lambda: self.choose("whatsapp_bot")).pack(fill="x", pady=4)
+            tk.Button(
+                button_row,
+                text="פתחי את קובץ התמלול",
+                command=lambda: self.choose("open_transcript"),
+                bg="#ffd7e8",
+                fg=TEXT,
+                activebackground="#ffc6df",
+                relief="flat",
+                cursor="hand2",
+                font=("Segoe UI", 10, "bold"),
+                pady=8,
+            ).pack(fill="x", pady=4)
+        tk.Button(
+            button_row,
+            text="העבירי עכשיו לבוט התמלול ב-WhatsApp",
+            command=lambda: self.choose("whatsapp_bot"),
+            bg=TEAL,
+            fg=TEXT,
+            activebackground="#76cadc",
+            relief="flat",
+            cursor="hand2",
+            font=("Segoe UI", 11, "bold"),
+            pady=9,
+        ).pack(fill="x", pady=4)
         if allow_whatsapp_fallback:
-            ttk.Button(
+            tk.Button(
                 button_row,
                 text="הבוט לא תמלל? שלחי שוב כ-OGG",
                 command=lambda: self.choose("whatsapp_ogg"),
+                bg="#ffeaf3",
+                fg=TEXT,
+                relief="flat",
+                cursor="hand2",
+                font=("Segoe UI", 9, "bold"),
+                pady=7,
             ).pack(fill="x", pady=4)
-        ttk.Button(button_row, text="סיימתי", command=lambda: self.choose("close")).pack(fill="x", pady=4)
+        tk.Button(
+            button_row,
+            text="סיימתי",
+            command=lambda: self.choose("close"),
+            bg="white",
+            fg=TEXT,
+            activebackground="#f5f5f5",
+            relief="solid",
+            borderwidth=1,
+            cursor="hand2",
+            font=("Segoe UI", 10),
+            pady=7,
+        ).pack(fill="x", pady=(8, 0))
 
         self.protocol("WM_DELETE_WINDOW", lambda: self.choose("close"))
+        center_toplevel_on_screen(self, width=540)
+        self.grab_set()
+        self.focus_force()
 
     def choose(self, value):
         self.result = value
@@ -2365,6 +2486,12 @@ class CatAudioCutterApp:
         self.hover_tooltip_window = None
         self.hotspot_tooltip_texts = {}
         self.whatsapp_notice_window = None
+        self.whatsapp_transfer_dialog = None
+        self.whatsapp_transfer_message_var = None
+        self.whatsapp_transfer_dots_var = None
+        self.whatsapp_transfer_progressbar = None
+        self.whatsapp_transfer_animation_job = None
+        self.whatsapp_transfer_animation_index = 0
         self.last_saved_dir = None
         self.last_output_files = []
         self.last_transcript_text = ""
@@ -4609,6 +4736,7 @@ class CatAudioCutterApp:
                 self.root.after(
                     0,
                     lambda whatsapp_bot_label=whatsapp_bot_label: (
+                        self.show_whatsapp_transfer_dialog(whatsapp_bot_label),
                         self.set_processing_hint("מדביקה ב-WhatsApp"),
                         self.set_status(f"מכינה MP3, פותחת את הבוט {whatsapp_bot_label} ומדביקה בשורת ההודעה..."),
                         self.set_progress(90),
@@ -4708,6 +4836,7 @@ class CatAudioCutterApp:
             self.root.after(
                 0,
                 lambda error_message=error_message, output_dir=output_dir, has_saved_audio=has_saved_audio: (
+                    self.hide_whatsapp_transfer_dialog(),
                     self.set_processing_state(False),
                     self.set_progress(100 if has_saved_audio else 0),
                     self.set_status(
@@ -4732,7 +4861,188 @@ class CatAudioCutterApp:
             elif output_dir and os.path.isdir(output_dir):
                 shutil.rmtree(output_dir, ignore_errors=True)
 
+    def show_whatsapp_transfer_dialog(self, bot_label=""):
+        self.hide_whatsapp_transfer_dialog()
+
+        dialog = tk.Toplevel(self.root)
+        self.whatsapp_transfer_dialog = dialog
+        dialog.title("מעבירה ל-WhatsApp")
+        dialog.configure(bg=STRONG_PINK)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        outer = tk.Frame(dialog, bg=STRONG_PINK, padx=2, pady=2)
+        outer.pack(fill="both", expand=True)
+        panel = tk.Frame(outer, bg="#fff9fc", padx=28, pady=24)
+        panel.pack(fill="both", expand=True)
+
+        badge = tk.Label(
+            panel,
+            text="WhatsApp",
+            bg=TEAL,
+            fg=TEXT,
+            font=("Segoe UI", 10, "bold"),
+            padx=16,
+            pady=5,
+        )
+        badge.pack()
+        tk.Label(
+            panel,
+            text="מעבירה לבוט ב-WhatsApp",
+            bg="#fff9fc",
+            fg=DARK_PINK,
+            font=("Segoe UI", 18, "bold"),
+        ).pack(pady=(13, 5))
+
+        self.whatsapp_transfer_message_var = tk.StringVar(
+            value="אנא המתיני בבקשה, את נסיכה!"
+        )
+        tk.Label(
+            panel,
+            textvariable=self.whatsapp_transfer_message_var,
+            bg="#fff9fc",
+            fg=TEXT,
+            font=("Segoe UI", 12, "bold"),
+        ).pack()
+        detail = "מכינה את קובצי האודיו ומדביקה אותם ישירות בצ'אט"
+        if bot_label:
+            detail += f" של {bot_label}"
+        tk.Label(
+            panel,
+            text=detail,
+            bg="#fff9fc",
+            fg=TEXT,
+            font=("Segoe UI", 9),
+            justify="center",
+            wraplength=420,
+        ).pack(pady=(6, 14))
+
+        self.whatsapp_transfer_progressbar = ttk.Progressbar(
+            panel,
+            mode="indeterminate",
+            style="Pink.Horizontal.TProgressbar",
+            length=390,
+        )
+        self.whatsapp_transfer_progressbar.pack(fill="x")
+        self.whatsapp_transfer_progressbar.start(12)
+
+        self.whatsapp_transfer_dots_var = tk.StringVar(value="● ○ ○")
+        tk.Label(
+            panel,
+            textvariable=self.whatsapp_transfer_dots_var,
+            bg="#fff9fc",
+            fg=TEAL,
+            font=("Segoe UI Symbol", 15, "bold"),
+        ).pack(pady=(10, 0))
+
+        center_toplevel_on_screen(dialog, width=500)
+        dialog.lift()
+        self.whatsapp_transfer_animation_index = 0
+        self.animate_whatsapp_transfer_dialog()
+
+    def animate_whatsapp_transfer_dialog(self):
+        dialog = self.whatsapp_transfer_dialog
+        if not dialog or not dialog.winfo_exists():
+            self.whatsapp_transfer_animation_job = None
+            return
+
+        frames = ("● ○ ○", "● ● ○", "● ● ●", "○ ○ ○")
+        if self.whatsapp_transfer_dots_var:
+            self.whatsapp_transfer_dots_var.set(
+                frames[self.whatsapp_transfer_animation_index % len(frames)]
+            )
+        self.whatsapp_transfer_animation_index += 1
+        self.whatsapp_transfer_animation_job = self.root.after(
+            350,
+            self.animate_whatsapp_transfer_dialog,
+        )
+
+    def hide_whatsapp_transfer_dialog(self):
+        if self.whatsapp_transfer_animation_job:
+            try:
+                self.root.after_cancel(self.whatsapp_transfer_animation_job)
+            except tk.TclError:
+                pass
+            self.whatsapp_transfer_animation_job = None
+        if self.whatsapp_transfer_progressbar:
+            try:
+                self.whatsapp_transfer_progressbar.stop()
+            except tk.TclError:
+                pass
+        if self.whatsapp_transfer_dialog and self.whatsapp_transfer_dialog.winfo_exists():
+            self.whatsapp_transfer_dialog.destroy()
+        self.whatsapp_transfer_dialog = None
+        self.whatsapp_transfer_message_var = None
+        self.whatsapp_transfer_dots_var = None
+        self.whatsapp_transfer_progressbar = None
+
+    def start_whatsapp_transfer_from_result(self, audio_files, bot_config, forced_format=None):
+        if not audio_files:
+            messagebox.showwarning("WhatsApp", "לא נמצאו קובצי שמע להעברה.")
+            return
+
+        bot_label = bot_config.get("label", "בוט התמלול")
+        self.show_whatsapp_transfer_dialog(bot_label)
+        self.set_status(f"מעבירה את קובצי האודיו ישירות לבוט {bot_label} ב-WhatsApp...")
+        threading.Thread(
+            target=self.whatsapp_transfer_from_result_worker,
+            args=(list(audio_files), dict(bot_config), forced_format),
+            daemon=True,
+        ).start()
+
+    def whatsapp_transfer_from_result_worker(self, audio_files, bot_config, forced_format=None):
+        try:
+            if forced_format:
+                format_used = send_audio_files_to_whatsapp_bot_as_format(
+                    audio_files,
+                    self.temp_dir,
+                    bot_config,
+                    forced_format,
+                )
+            else:
+                format_used = send_audio_files_to_whatsapp_bot(
+                    audio_files,
+                    self.temp_dir,
+                    bot_config,
+                )
+            self.root.after(
+                0,
+                lambda format_used=format_used, bot_config=bot_config: (
+                    self.hide_whatsapp_transfer_dialog(),
+                    self.set_status(
+                        f"קובצי {format_used.upper()} נמצאים אצל {bot_config.get('label', 'הבוט')} ב-WhatsApp. "
+                        "נשאר רק ללחוץ Enter כדי לשלוח."
+                    ),
+                ),
+            )
+        except WhatsAppPasteError:
+            self.root.after(
+                0,
+                lambda bot_config=bot_config: (
+                    self.hide_whatsapp_transfer_dialog(),
+                    self.set_status("ההעברה האוטומטית לא הושלמה. הקבצים מוכנים להדבקה ידנית."),
+                    self.show_whatsapp_clipboard_notice(bot_config),
+                ),
+            )
+        except Exception as error:
+            error_message = str(error)
+            self.root.after(
+                0,
+                lambda error_message=error_message: (
+                    self.hide_whatsapp_transfer_dialog(),
+                    self.set_status("העברת הקבצים ל-WhatsApp לא הושלמה."),
+                    messagebox.showwarning(
+                        "WhatsApp",
+                        "לא הצלחתי להשלים את ההעברה ל-WhatsApp.\n\n"
+                        f"פרטים:\n{error_message}\n\n"
+                        "קובצי האודיו עדיין שמורים בתיקייה.",
+                    ),
+                ),
+            )
+
     def finish_whatsapp_clipboard_fallback(self, copied_files, output_dir, whatsapp_bot_config):
+        self.hide_whatsapp_transfer_dialog()
         self.last_saved_dir = output_dir
         self.last_output_files = copied_files
         self.set_processing_state(False)
@@ -4823,6 +5133,7 @@ class CatAudioCutterApp:
         self.set_progress(100)
         audio_files = [path for path in copied_files if Path(path).suffix.lower() in AUDIO_EXTENSIONS]
         if transcription_mode == TRANSCRIPTION_WHATSAPP:
+            self.hide_whatsapp_transfer_dialog()
             bot_label = (whatsapp_bot_config or {}).get("label", "הבוט שנבחר")
             format_label = whatsapp_format_used.upper() if whatsapp_format_used else "קובץ שמע"
             self.set_status(
@@ -4833,19 +5144,6 @@ class CatAudioCutterApp:
 
         transcript_note = " והתמלול נשמר כקובץ TXT" if transcript_path else ""
         self.set_status(f"הפעולה הסתיימה ונשמרו {len(audio_files)} קבצי שמע{transcript_note}. 🐱💗")
-
-        message_lines = [
-            "הפעולה הושלמה בהצלחה.",
-            "",
-            f"נשמרו {len(audio_files)} קבצי שמע כאן:",
-            output_dir,
-        ]
-        if transcript_path:
-            message_lines.extend(["", "התמלול נשמר כאן:", transcript_path])
-        messagebox.showinfo(
-            "הפעולה הסתיימה",
-            "\n".join(message_lines).strip(),
-        )
 
         if transcript_path:
             self.add_history_record(output_dir, transcript_path, transcription_mode, len(audio_files))
@@ -4870,40 +5168,15 @@ class CatAudioCutterApp:
             except OSError:
                 messagebox.showwarning("תמלול", "לא הצלחתי לפתוח את קובץ התמלול.")
         elif dialog.result == "whatsapp_bot":
-            audio_files = [path for path in copied_files if Path(path).suffix.lower() in AUDIO_EXTENSIONS]
-            try:
-                bot_config = get_whatsapp_bot_config(self.whatsapp_bot_var.get())
-                self.set_status(f"מכינה MP3 ופותחת את בוט התמלול ב-WhatsApp ({bot_config['label']})...")
-                format_used = send_audio_files_to_whatsapp_bot(audio_files, self.temp_dir, bot_config)
-                self.set_status(
-                    f"קובצי {format_used.upper()} הודבקו ב-WhatsApp. לחצי Enter בחלון WhatsApp כדי לשלוח."
-                )
-            except Exception as error:
-                messagebox.showwarning(
-                    "WhatsApp",
-                    "ניסיתי לפתוח את בוט התמלול ב-WhatsApp, אבל האוטומציה לא הושלמה עד הסוף.\n\n"
-                    f"פרטים:\n{error}\n\n"
-                    "הקבצים כבר שמורים אצלך בתיקייה וניתן לשלוח ידנית.",
-                )
+            bot_config = get_whatsapp_bot_config(self.whatsapp_bot_var.get())
+            self.start_whatsapp_transfer_from_result(audio_files, bot_config)
         elif dialog.result == "whatsapp_ogg":
-            audio_files = [path for path in copied_files if Path(path).suffix.lower() in AUDIO_EXTENSIONS]
-            try:
-                bot_config = whatsapp_bot_config or get_whatsapp_bot_config(self.whatsapp_bot_var.get())
-                self.set_status(f"מכינה OGG ושולחת שוב לבוט {bot_config['label']}...")
-                send_audio_files_to_whatsapp_bot_as_format(
-                    audio_files,
-                    self.temp_dir,
-                    bot_config,
-                    WHATSAPP_FALLBACK_FORMAT,
-                )
-                self.set_status("קובצי OGG/Opus הודבקו ב-WhatsApp. לחצי Enter כדי לשלוח.")
-            except Exception as error:
-                messagebox.showwarning(
-                    "WhatsApp",
-                    "לא הצלחתי לבצע את השליחה החוזרת כ-OGG.\n\n"
-                    f"פרטים:\n{error}\n\n"
-                    "הקבצים המקוריים עדיין שמורים בתיקייה.",
-                )
+            bot_config = whatsapp_bot_config or get_whatsapp_bot_config(self.whatsapp_bot_var.get())
+            self.start_whatsapp_transfer_from_result(
+                audio_files,
+                bot_config,
+                forced_format=WHATSAPP_FALLBACK_FORMAT,
+            )
 
     def schedule_random_message(self, initial_delay=False):
         if not self.empowering_messages_enabled_var.get():
@@ -4971,6 +5244,7 @@ class CatAudioCutterApp:
 
     def on_close(self):
         self.hide_hover_tooltip()
+        self.hide_whatsapp_transfer_dialog()
         if self.whatsapp_notice_window and self.whatsapp_notice_window.winfo_exists():
             self.whatsapp_notice_window.destroy()
             self.whatsapp_notice_window = None
