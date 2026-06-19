@@ -1865,8 +1865,8 @@ class CatAudioCutterApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(APP_TITLE)
-        self.root.geometry("1120x860")
-        self.root.minsize(980, 760)
+        self.root.geometry("590x900")
+        self.root.minsize(540, 700)
         self.root.configure(bg=BG)
 
         self.app_settings = load_app_settings()
@@ -1927,6 +1927,8 @@ class CatAudioCutterApp:
         self.audio_player_path = ""
         self.audio_player_update_job = None
         self.menu_design_image = None
+        self.menu_design_source_image = None
+        self.menu_ui_scale = 1.0
         self.settings_dialog = None
         self.random_message_job = None
         self.last_saved_dir = None
@@ -2015,11 +2017,13 @@ class CatAudioCutterApp:
             self.build_main_action_panel(fallback)
             return
 
-        self.menu_design_image = tk.PhotoImage(file=image_path)
+        self.menu_design_source_image = tk.PhotoImage(file=image_path)
+        self.menu_design_image = self.menu_design_source_image.subsample(2, 2)
+        self.menu_ui_scale = self.menu_design_image.width() / max(self.menu_design_source_image.width(), 1)
         width = self.menu_design_image.width()
         height = self.menu_design_image.height()
         self.menu_image_item = self.main_canvas.create_image(0, 0, image=self.menu_design_image, anchor="nw")
-        self.main_canvas.configure(scrollregion=(0, 0, width, height + 120))
+        self.main_canvas.configure(scrollregion=(0, 0, width, height + self.s(120)))
         self.canvas_window_id = None
 
         self.create_mockup_hotspot("settings", 35, 35, 274, 183, self.open_settings_dialog)
@@ -2028,35 +2032,35 @@ class CatAudioCutterApp:
         self.create_mockup_hotspot("cut", 67, 822, 1015, 1252, self.start_cut_audio_only)
         self.create_mockup_hotspot("transcribe", 75, 1356, 1018, 1788, self.start_transcribe_audio_now)
 
-        self.player_fill_item = self.main_canvas.create_rectangle(60, 729, 60, 783, fill="#f4a9c7", outline="")
+        self.player_fill_item = self.main_canvas.create_rectangle(self.s(60), self.s(729), self.s(60), self.s(783), fill="#f4a9c7", outline="")
         self.player_time_canvas_item = self.main_canvas.create_text(
-            1000,
-            786,
+            self.s(1000),
+            self.s(786),
             text=self.player_time_var.get(),
             anchor="e",
             fill=TEXT,
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", self.sf(10), "bold"),
         )
         self.selected_file_canvas_item = self.main_canvas.create_text(
-            540,
-            792,
+            self.s(540),
+            self.s(792),
             text=self.selected_file_label_var.get(),
             anchor="center",
             fill=TEXT,
-            font=("Segoe UI", 10, "bold"),
-            width=660,
+            font=("Segoe UI", self.sf(10), "bold"),
+            width=self.s(660),
         )
         self.status_canvas_item = self.main_canvas.create_text(
-            540,
-            1850,
+            self.s(540),
+            self.s(1850),
             text=self.status_var.get(),
             anchor="center",
             fill=TEXT,
-            font=("Segoe UI", 11, "bold"),
-            width=900,
+            font=("Segoe UI", self.sf(11), "bold"),
+            width=self.s(900),
         )
-        self.progress_canvas_item = self.main_canvas.create_rectangle(80, 1872, 80, 1888, fill=TEAL, outline="")
-        self.progress_track_canvas_item = self.main_canvas.create_rectangle(80, 1872, 1000, 1888, outline="#ff9ec9", width=2)
+        self.progress_canvas_item = self.main_canvas.create_rectangle(self.s(80), self.s(1872), self.s(80), self.s(1888), fill=TEAL, outline="")
+        self.progress_track_canvas_item = self.main_canvas.create_rectangle(self.s(80), self.s(1872), self.s(1000), self.s(1888), outline="#ff9ec9", width=2)
         self.processing_label_var = tk.StringVar(value="")
         self.progress_bar = ttk.Progressbar(self.root, variable=self.progress_var, maximum=100)
         self.player_play_button = None
@@ -2066,8 +2070,19 @@ class CatAudioCutterApp:
         self.cut_button = self.transcribe_button = self.main_canvas
         self.cut_audio_button = self.upload_action_button = self.main_canvas
 
+        screen_height = max(720, self.root.winfo_screenheight())
+        target_width = width + 34
+        target_height = min(height + 90, screen_height - 70)
+        self.root.geometry(f"{target_width}x{target_height}")
+
+    def s(self, value: float) -> int:
+        return int(round(value * self.menu_ui_scale))
+
+    def sf(self, value: int) -> int:
+        return max(7, int(round(value * self.menu_ui_scale)))
+
     def create_mockup_hotspot(self, tag: str, x1: int, y1: int, x2: int, y2: int, command):
-        item = self.main_canvas.create_rectangle(x1, y1, x2, y2, fill="", outline="", tags=(tag, "hotspot"))
+        item = self.main_canvas.create_rectangle(self.s(x1), self.s(y1), self.s(x2), self.s(y2), fill="", outline="", tags=(tag, "hotspot"))
         self.main_canvas.tag_bind(item, "<Button-1>", lambda _event: command())
         self.main_canvas.tag_bind(item, "<Enter>", lambda _event: self.main_canvas.configure(cursor="hand2"))
         self.main_canvas.tag_bind(item, "<Leave>", lambda _event: self.main_canvas.configure(cursor=""))
@@ -3115,10 +3130,10 @@ class CatAudioCutterApp:
         if hasattr(self, "player_fill_item"):
             self.main_canvas.coords(
                 self.player_fill_item,
-                60,
-                729,
-                60 + (962 * (max(0, min(100, percent)) / 100)),
-                783,
+                self.s(60),
+                self.s(729),
+                self.s(60) + (self.s(962) * (max(0, min(100, percent)) / 100)),
+                self.s(783),
             )
 
     def update_audio_player_progress(self):
@@ -3374,7 +3389,13 @@ class CatAudioCutterApp:
         percent = max(0, min(100, value))
         self.progress_var.set(percent)
         if hasattr(self, "progress_canvas_item"):
-            self.main_canvas.coords(self.progress_canvas_item, 80, 1872, 80 + (920 * (percent / 100)), 1888)
+            self.main_canvas.coords(
+                self.progress_canvas_item,
+                self.s(80),
+                self.s(1872),
+                self.s(80) + (self.s(920) * (percent / 100)),
+                self.s(1888),
+            )
         self.root.update_idletasks()
 
     def on_content_configure(self, _event=None):
@@ -3427,7 +3448,7 @@ class CatAudioCutterApp:
                 content_height = max(bbox[3] - bbox[1], 1)
                 canvas_height = max(self.main_canvas.winfo_height(), 1)
                 max_scroll = max(content_height - canvas_height, 1)
-                self.main_canvas.yview_moveto(max(0.0, min(1356 / max_scroll, 1.0)))
+                self.main_canvas.yview_moveto(max(0.0, min(self.s(1356) / max_scroll, 1.0)))
             return
         if not hasattr(self, "action_row"):
             return
