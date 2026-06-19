@@ -1,0 +1,11 @@
+{
+  "openai": [
+    "PASTE_OPENAI_OR_COMPATIBLE_KEY_HERE"
+  ],
+  "gemini": [
+    "PASTE_GEMINI_API_KEY_HERE"
+  ],
+  "openrouter": [
+    "PASTE_OPENROUTER_API_KEY_HERE"
+  ]
+}

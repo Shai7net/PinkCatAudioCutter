@@ -1,0 +1,25 @@
+gemini_api_key.txt
+api_keys.json
+cat_audio_cutter_settings.json
+cat_audio_cutter_history.json
+
+build/
+dist/
+release/
+bundled_stdlib/
+tmp_*/
+cat_audio_result_*/
+
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.ogg
+*.flac
+*.exe
+ChatGPT Image May 4, 2026, 08_19_25 PM.ico
