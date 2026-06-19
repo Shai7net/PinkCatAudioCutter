@@ -72,8 +72,19 @@ DEFAULT_MP3_BITRATE = "192k"
 DEFAULT_MP3_SAMPLE_RATE = "44100"
 DEFAULT_OGG_BITRATE = "32k"
 DEFAULT_OGG_SAMPLE_RATE = "48000"
-WHATSAPP_BOT_PHONE = "972559571223"
-WHATSAPP_BOT_LABEL = "+972 55-957-1223"
+DEFAULT_WHATSAPP_BOT_OPTION = "בוט תמלול ישראלי - +972 55-957-1223"
+WHATSAPP_BOT_OPTIONS = {
+    DEFAULT_WHATSAPP_BOT_OPTION: {
+        "phone": "972559571223",
+        "label": "+972 55-957-1223",
+    },
+    "Transcribe Bot - +1 413-600-0076 (100 שניות חינם)": {
+        "phone": "14136000076",
+        "label": "+1 413-600-0076",
+    },
+}
+WHATSAPP_PRIMARY_FORMAT = "mp3"
+WHATSAPP_FALLBACK_FORMAT = "ogg"
 TRANSCRIPTION_LOCAL = "local"
 TRANSCRIPTION_EXTERNAL = "external"
 TRANSCRIPTION_WHATSAPP = "whatsapp"
@@ -591,6 +602,60 @@ def build_ffmpeg_output_args(output_format: str, bitrate: str, sample_rate: str)
     if output_format == "wav":
         return ["-acodec", "pcm_s16le", "-ar", sample_rate]
     raise ValueError("פורמט פלט לא נתמך.")
+
+
+def get_whatsapp_bot_config(option_label: str):
+    return WHATSAPP_BOT_OPTIONS.get(option_label, WHATSAPP_BOT_OPTIONS[DEFAULT_WHATSAPP_BOT_OPTION])
+
+
+def prepare_whatsapp_audio_files(file_paths, temp_dir: str, output_format: str):
+    if output_format not in {WHATSAPP_PRIMARY_FORMAT, WHATSAPP_FALLBACK_FORMAT}:
+        raise ValueError("פורמט WhatsApp לא נתמך.")
+
+    valid_paths = [path for path in file_paths if path and os.path.isfile(path)]
+    if not valid_paths:
+        raise FileNotFoundError("לא נמצאו קבצי שמע תקינים לשליחה ל-WhatsApp.")
+
+    prepared_dir = os.path.join(temp_dir, f"whatsapp_{output_format}")
+    os.makedirs(prepared_dir, exist_ok=True)
+    prepared_paths = []
+    for index, source_path in enumerate(valid_paths, start=1):
+        target_path = os.path.join(prepared_dir, f"segment_{index:02d}.{output_format}")
+        if output_format == WHATSAPP_PRIMARY_FORMAT:
+            codec_args = ["-acodec", "libmp3lame", "-b:a", "96k", "-ac", "1", "-ar", "44100"]
+        else:
+            codec_args = [
+                "-acodec",
+                "libopus",
+                "-b:a",
+                "32k",
+                "-vbr",
+                "on",
+                "-application",
+                "voip",
+                "-ac",
+                "1",
+                "-ar",
+                "48000",
+            ]
+        run_command(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                source_path,
+                "-vn",
+                *codec_args,
+                target_path,
+            ]
+        )
+        if not os.path.exists(target_path) or os.path.getsize(target_path) == 0:
+            raise RuntimeError(f"לא הצלחתי להכין את מקטע {index} לשליחה ל-WhatsApp.")
+        prepared_paths.append(target_path)
+    return prepared_paths
 
 
 def build_segment_plan(mode: str, audio_path: str, segments_count: int, ranges_text: str):
@@ -1695,9 +1760,8 @@ def set_files_to_clipboard(file_paths):
     )
 
 
-def open_whatsapp_chat_by_phone(phone_number: str, prefilled_message: str = ""):
-    encoded_message = urllib.parse.quote(prefilled_message or "")
-    targets = [f"whatsapp://send?phone={phone_number}&text={encoded_message}", f"whatsapp://send?phone={phone_number}"]
+def open_whatsapp_chat_by_phone(phone_number: str):
+    targets = [f"whatsapp://send?phone={phone_number}"]
     for target in targets:
         try:
             os.startfile(target)
@@ -1707,8 +1771,8 @@ def open_whatsapp_chat_by_phone(phone_number: str, prefilled_message: str = ""):
     return False
 
 
-def automate_whatsapp_send_to_bot(file_paths, intro_message: str = ""):
-    direct_opened = open_whatsapp_chat_by_phone(WHATSAPP_BOT_PHONE, intro_message)
+def automate_whatsapp_send_to_bot(file_paths, phone_number: str, bot_label: str):
+    direct_opened = open_whatsapp_chat_by_phone(phone_number)
     if not direct_opened:
         try:
             os.startfile("whatsapp:")
@@ -1720,23 +1784,43 @@ def automate_whatsapp_send_to_bot(file_paths, intro_message: str = ""):
     if not direct_opened:
         pyautogui.hotkey("ctrl", "f")
         time.sleep(1)
-        pyperclip.copy(WHATSAPP_BOT_LABEL)
+        pyperclip.copy(bot_label)
         pyautogui.hotkey("ctrl", "v")
         time.sleep(1.2)
         pyautogui.press("enter")
         time.sleep(1.8)
-        if intro_message.strip():
-            pyperclip.copy(intro_message)
-            pyautogui.hotkey("ctrl", "v")
-            time.sleep(0.6)
-            pyautogui.press("enter")
-            time.sleep(0.8)
     if file_paths:
         set_files_to_clipboard(file_paths)
         time.sleep(0.8)
         pyautogui.hotkey("ctrl", "v")
         time.sleep(3.2)
         pyautogui.press("enter")
+
+
+def send_audio_files_to_whatsapp_bot(file_paths, temp_dir: str, bot_config):
+    phone_number = bot_config["phone"]
+    bot_label = bot_config["label"]
+    mp3_paths = prepare_whatsapp_audio_files(file_paths, temp_dir, WHATSAPP_PRIMARY_FORMAT)
+    try:
+        automate_whatsapp_send_to_bot(mp3_paths, phone_number, bot_label)
+        return WHATSAPP_PRIMARY_FORMAT
+    except Exception as mp3_error:
+        ogg_paths = prepare_whatsapp_audio_files(file_paths, temp_dir, WHATSAPP_FALLBACK_FORMAT)
+        try:
+            automate_whatsapp_send_to_bot(ogg_paths, phone_number, bot_label)
+            return WHATSAPP_FALLBACK_FORMAT
+        except Exception as ogg_error:
+            raise RuntimeError(
+                "לא הצלחתי לשלוח את קבצי השמע ל-WhatsApp כ-MP3 וגם לא כ-OGG. "
+                f"MP3: {mp3_error}; OGG: {ogg_error}"
+            ) from ogg_error
+
+
+def send_audio_files_to_whatsapp_bot_as_format(file_paths, temp_dir: str, bot_config, output_format: str):
+    prepared_paths = prepare_whatsapp_audio_files(file_paths, temp_dir, output_format)
+    automate_whatsapp_send_to_bot(prepared_paths, bot_config["phone"], bot_config["label"])
+    return output_format
+
 
 class AudioPreviewPlayer:
     def __init__(self):
@@ -1813,7 +1897,7 @@ class AudioPreviewPlayer:
 
 
 class ResultDialog(tk.Toplevel):
-    def __init__(self, master, folder_path, transcript_path=None):
+    def __init__(self, master, folder_path, transcript_path=None, allow_whatsapp_fallback=False):
         super().__init__(master)
         self.title("מה לעשות עכשיו?")
         self.result = None
@@ -1852,6 +1936,12 @@ class ResultDialog(tk.Toplevel):
         if transcript_path:
             ttk.Button(button_row, text="פתחי את קובץ התמלול", command=lambda: self.choose("open_transcript")).pack(fill="x", pady=4)
         ttk.Button(button_row, text="פתחי את בוט התמלול ב-WhatsApp", command=lambda: self.choose("whatsapp_bot")).pack(fill="x", pady=4)
+        if allow_whatsapp_fallback:
+            ttk.Button(
+                button_row,
+                text="הבוט לא תמלל? שלחי שוב כ-OGG",
+                command=lambda: self.choose("whatsapp_ogg"),
+            ).pack(fill="x", pady=4)
         ttk.Button(button_row, text="סיימתי", command=lambda: self.choose("close")).pack(fill="x", pady=4)
 
         self.protocol("WM_DELETE_WINDOW", lambda: self.choose("close"))
@@ -1883,6 +1973,10 @@ class CatAudioCutterApp:
         self.bitrate_var = tk.StringVar(value=setting("bitrate", DEFAULT_MP3_BITRATE))
         self.sample_rate_var = tk.StringVar(value=setting("sample_rate", DEFAULT_MP3_SAMPLE_RATE))
         self.transcription_mode_var = tk.StringVar(value=setting("transcription_mode", TRANSCRIPTION_LOCAL))
+        saved_whatsapp_bot = setting("whatsapp_bot", DEFAULT_WHATSAPP_BOT_OPTION)
+        if saved_whatsapp_bot not in WHATSAPP_BOT_OPTIONS:
+            saved_whatsapp_bot = DEFAULT_WHATSAPP_BOT_OPTION
+        self.whatsapp_bot_var = tk.StringVar(value=saved_whatsapp_bot)
         self.transcription_engine_var = tk.StringVar(
             value=get_transcription_engine_label(setting("transcription_engine", TRANSCRIPTION_ENGINE_LOCAL))
         )
@@ -2061,6 +2155,25 @@ class CatAudioCutterApp:
         )
         self.progress_canvas_item = self.main_canvas.create_rectangle(self.s(80), self.s(1872), self.s(80), self.s(1888), fill=TEAL, outline="")
         self.progress_track_canvas_item = self.main_canvas.create_rectangle(self.s(80), self.s(1872), self.s(1000), self.s(1888), outline="#ff9ec9", width=2)
+        self.folder_canvas_item = self.main_canvas.create_text(
+            self.s(1040),
+            self.s(1838),
+            text="📁",
+            anchor="e",
+            font=("Segoe UI Emoji", self.sf(34)),
+            tags=("open_output_folder",),
+        )
+        self.main_canvas.tag_bind(self.folder_canvas_item, "<Button-1>", lambda _event: self.open_output_folder())
+        self.main_canvas.tag_bind(
+            self.folder_canvas_item,
+            "<Enter>",
+            lambda _event: self.main_canvas.configure(cursor="hand2"),
+        )
+        self.main_canvas.tag_bind(
+            self.folder_canvas_item,
+            "<Leave>",
+            lambda _event: self.main_canvas.configure(cursor=""),
+        )
         self.processing_label_var = tk.StringVar(value="")
         self.progress_bar = ttk.Progressbar(self.root, variable=self.progress_var, maximum=100)
         self.player_play_button = None
@@ -2789,9 +2902,29 @@ class CatAudioCutterApp:
         ).pack(anchor="w", pady=(6, 0))
 
         self.whatsapp_transcription_frame = tk.Frame(section, bg=CARD)
+        whatsapp_bot_row = tk.Frame(self.whatsapp_transcription_frame, bg=CARD)
+        whatsapp_bot_row.pack(fill="x", pady=(0, 6))
+        tk.Label(
+            whatsapp_bot_row,
+            text="בוט תמלול",
+            bg=CARD,
+            fg=TEXT,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left", padx=(0, 8))
+        self.whatsapp_bot_combo = ttk.Combobox(
+            whatsapp_bot_row,
+            textvariable=self.whatsapp_bot_var,
+            values=list(WHATSAPP_BOT_OPTIONS.keys()),
+            state="readonly",
+            width=43,
+        )
+        self.whatsapp_bot_combo.pack(side="left", fill="x", expand=True)
         tk.Label(
             self.whatsapp_transcription_frame,
-            text=f"המקטעים יישמרו במחשב ואז יישלחו לבוט התמלול ב-WhatsApp: {WHATSAPP_BOT_LABEL}",
+            text=(
+                "המקטעים יישמרו במחשב, יומרו ל-MP3 ויישלחו לבוט בלי הודעת טקסט. "
+                "אם השליחה נכשלת טכנית, הכלי ינסה שוב אוטומטית כ-OGG/Opus."
+            ),
             bg=CARD,
             fg=TEXT,
             font=("Segoe UI", 9),
@@ -2972,6 +3105,7 @@ class CatAudioCutterApp:
             "bitrate": self.bitrate_var.get().strip(),
             "sample_rate": self.sample_rate_var.get().strip(),
             "transcription_mode": self.transcription_mode_var.get(),
+            "whatsapp_bot": self.whatsapp_bot_var.get(),
             "transcription_engine": get_transcription_engine_value(self.transcription_engine_var.get()),
             "local_model_label": self.local_model_var.get(),
             "azure_endpoint": self.azure_endpoint_var.get().strip(),
@@ -3696,6 +3830,10 @@ class CatAudioCutterApp:
         transcription_mode = overrides.get("transcription_mode", self.transcription_mode_var.get())
         if transcription_mode not in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL, TRANSCRIPTION_WHATSAPP, TRANSCRIPTION_NONE}:
             raise ValueError("בחרי מצב תמלול תקין.")
+        whatsapp_bot_option = overrides.get("whatsapp_bot", self.whatsapp_bot_var.get())
+        if whatsapp_bot_option not in WHATSAPP_BOT_OPTIONS:
+            raise ValueError("בחרי בוט WhatsApp תקין.")
+        whatsapp_bot_config = get_whatsapp_bot_config(whatsapp_bot_option)
 
         transcription_engine = overrides.get(
             "transcription_engine",
@@ -3785,6 +3923,8 @@ class CatAudioCutterApp:
             "sample_rate": sample_rate,
             "output_dir": output_dir,
             "transcription_mode": transcription_mode,
+            "whatsapp_bot": whatsapp_bot_option,
+            "whatsapp_bot_config": whatsapp_bot_config,
             "transcription_engine": transcription_engine,
             "local_model_name": local_model_name,
             "azure_openai_configs": azure_openai_configs,
@@ -3932,6 +4072,7 @@ class CatAudioCutterApp:
 
             transcript_text = ""
             transcript_path = None
+            whatsapp_format_used = ""
             transcription_mode = settings["transcription_mode"]
 
             if transcription_mode in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL}:
@@ -4033,17 +4174,19 @@ class CatAudioCutterApp:
                             )
                         copied_files.append(warning_path)
             elif transcription_mode == TRANSCRIPTION_WHATSAPP:
+                whatsapp_bot_label = settings["whatsapp_bot_config"]["label"]
                 self.root.after(
                     0,
-                    lambda: (
+                    lambda whatsapp_bot_label=whatsapp_bot_label: (
                         self.set_processing_hint("שולחת לבוט התמלול"),
-                        self.set_status(f"פותחת WhatsApp ושולחת את המקטעים לבוט {WHATSAPP_BOT_LABEL}..."),
+                        self.set_status(f"מכינה MP3 ופותחת את הבוט {whatsapp_bot_label} ב-WhatsApp..."),
                         self.set_progress(90),
                     ),
                 )
-                automate_whatsapp_send_to_bot(
+                whatsapp_format_used = send_audio_files_to_whatsapp_bot(
                     audio_files,
-                    "היי, שולחת מקטעי שמע לתמלול.",
+                    self.temp_dir,
+                    settings["whatsapp_bot_config"],
                 )
 
             if (
@@ -4103,6 +4246,8 @@ class CatAudioCutterApp:
                     transcription_mode,
                     transcript_text,
                     transcript_path,
+                    settings.get("whatsapp_bot_config"),
+                    whatsapp_format_used,
                 ),
             )
         except Exception as error:
@@ -4140,7 +4285,16 @@ class CatAudioCutterApp:
             elif output_dir and os.path.isdir(output_dir):
                 shutil.rmtree(output_dir, ignore_errors=True)
 
-    def finish_processing(self, copied_files, output_dir, transcription_mode, transcript_text="", transcript_path=None):
+    def finish_processing(
+        self,
+        copied_files,
+        output_dir,
+        transcription_mode,
+        transcript_text="",
+        transcript_path=None,
+        whatsapp_bot_config=None,
+        whatsapp_format_used="",
+    ):
         self.last_saved_dir = output_dir
         self.last_output_files = copied_files
         self.last_transcript_text = transcript_text or ""
@@ -4161,7 +4315,9 @@ class CatAudioCutterApp:
         if transcript_path:
             message_lines.extend(["", "התמלול נשמר כאן:", transcript_path])
         elif transcription_mode == TRANSCRIPTION_WHATSAPP:
-            message_lines.extend(["", f"המקטעים גם נשלחו לבוט התמלול ב-WhatsApp: {WHATSAPP_BOT_LABEL}"])
+            bot_label = (whatsapp_bot_config or {}).get("label", "הבוט שנבחר")
+            format_label = whatsapp_format_used.upper() if whatsapp_format_used else "קובץ שמע"
+            message_lines.extend(["", f"המקטעים נשלחו כ-{format_label} לבוט התמלול ב-WhatsApp: {bot_label}"])
 
         messagebox.showinfo(
             "הפעולה הסתיימה",
@@ -4172,7 +4328,12 @@ class CatAudioCutterApp:
             self.add_history_record(output_dir, transcript_path, transcription_mode, len(audio_files))
         self.save_current_settings()
 
-        dialog = ResultDialog(self.root, output_dir, transcript_path)
+        dialog = ResultDialog(
+            self.root,
+            output_dir,
+            transcript_path,
+            allow_whatsapp_fallback=transcription_mode == TRANSCRIPTION_WHATSAPP,
+        )
         self.root.wait_window(dialog)
 
         if dialog.result == "open_folder":
@@ -4188,9 +4349,10 @@ class CatAudioCutterApp:
         elif dialog.result == "whatsapp_bot":
             audio_files = [path for path in copied_files if Path(path).suffix.lower() in AUDIO_EXTENSIONS]
             try:
-                self.set_status(f"פותחת את בוט התמלול ב-WhatsApp ({WHATSAPP_BOT_LABEL})...")
-                automate_whatsapp_send_to_bot(audio_files, "היי, שולחת מקטעי שמע לתמלול.")
-                self.set_status("WhatsApp נפתח והמקטעים נשלחו לבוט התמלול. 💌")
+                bot_config = get_whatsapp_bot_config(self.whatsapp_bot_var.get())
+                self.set_status(f"מכינה MP3 ופותחת את בוט התמלול ב-WhatsApp ({bot_config['label']})...")
+                format_used = send_audio_files_to_whatsapp_bot(audio_files, self.temp_dir, bot_config)
+                self.set_status(f"WhatsApp נפתח והמקטעים נשלחו כ-{format_used.upper()} לבוט התמלול. 💌")
                 messagebox.showinfo(
                     "נשלח",
                     "פתחתי את בוט התמלול ב-WhatsApp וניסיתי לשלוח אליו את מקטעי השמע.\n"
@@ -4202,6 +4364,26 @@ class CatAudioCutterApp:
                     "ניסיתי לפתוח את בוט התמלול ב-WhatsApp, אבל האוטומציה לא הושלמה עד הסוף.\n\n"
                     f"פרטים:\n{error}\n\n"
                     "הקבצים כבר שמורים אצלך בתיקייה וניתן לשלוח ידנית.",
+                )
+        elif dialog.result == "whatsapp_ogg":
+            audio_files = [path for path in copied_files if Path(path).suffix.lower() in AUDIO_EXTENSIONS]
+            try:
+                bot_config = whatsapp_bot_config or get_whatsapp_bot_config(self.whatsapp_bot_var.get())
+                self.set_status(f"מכינה OGG ושולחת שוב לבוט {bot_config['label']}...")
+                send_audio_files_to_whatsapp_bot_as_format(
+                    audio_files,
+                    self.temp_dir,
+                    bot_config,
+                    WHATSAPP_FALLBACK_FORMAT,
+                )
+                self.set_status("המקטעים נשלחו שוב כ-OGG/Opus לבוט התמלול.")
+                messagebox.showinfo("נשלח שוב", "המקטעים הומרו ל-OGG/Opus ונשלחו שוב בלי הודעת טקסט.")
+            except Exception as error:
+                messagebox.showwarning(
+                    "WhatsApp",
+                    "לא הצלחתי לבצע את השליחה החוזרת כ-OGG.\n\n"
+                    f"פרטים:\n{error}\n\n"
+                    "הקבצים המקוריים עדיין שמורים בתיקייה.",
                 )
 
     def schedule_random_message(self, initial_delay=False):

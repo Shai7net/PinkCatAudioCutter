@@ -172,6 +172,15 @@ if len(full_paths) != 1 or not os.path.exists(full_paths[0]) or os.path.getsize(
 prepared = globals_dict['prepare_audio_for_local_transcription'](split_paths[0], temp_dir, 1)
 if not os.path.exists(prepared) or os.path.getsize(prepared) == 0:
     raise RuntimeError('self-test did not create a valid transcription WAV')
+whatsapp_mp3 = globals_dict['prepare_whatsapp_audio_files'](copied, temp_dir, 'mp3')
+whatsapp_ogg = globals_dict['prepare_whatsapp_audio_files'](copied, temp_dir, 'ogg')
+if len(whatsapp_mp3) != 2 or not all(path.endswith('.mp3') and os.path.getsize(path) > 0 for path in whatsapp_mp3):
+    raise RuntimeError('self-test did not prepare valid WhatsApp MP3 files')
+if len(whatsapp_ogg) != 2 or not all(path.endswith('.ogg') and os.path.getsize(path) > 0 for path in whatsapp_ogg):
+    raise RuntimeError('self-test did not prepare valid WhatsApp OGG fallback files')
+default_whatsapp_bot = globals_dict['get_whatsapp_bot_config']('missing-option')
+if default_whatsapp_bot['phone'] != '972559571223':
+    raise RuntimeError('self-test WhatsApp bot fallback failed')
 body, content_type = globals_dict['encode_multipart_form']({'model': 'test-model'}, 'file', copied[0])
 if b'test-model' not in body or 'multipart/form-data' not in content_type:
     raise RuntimeError('self-test multipart encoding failed')
@@ -241,6 +250,10 @@ if not hasattr(app, 'transcribe_button') or not app.transcribe_button.winfo_exis
     raise RuntimeError('self-test UI did not create the transcribe action card')
 if not hasattr(app, 'player_fill_item'):
     raise RuntimeError('self-test UI did not create the audio player')
+if not hasattr(app, 'folder_canvas_item'):
+    raise RuntimeError('self-test UI did not create the output folder icon')
+if len(app.whatsapp_bot_combo.cget('values')) < 2:
+    raise RuntimeError('self-test UI did not create the WhatsApp bot choices')
 if app.settings_notebook.index('end') < 4:
     raise RuntimeError('self-test UI did not create the settings tabs')
 app.transcription_engine_var.set('Azure Cloud Whisper')
