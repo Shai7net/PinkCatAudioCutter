@@ -207,6 +207,44 @@ if chat_text != 'hello from chat':
 api_keys = globals_dict['parse_api_key_lines']('key-a\n# comment\nkey-b,key-a')
 if api_keys != ['key-a', 'key-b']:
     raise RuntimeError('self-test API key parser failed')
+azure_configs = globals_dict['normalize_azure_openai_configs']([
+    {
+        'api_key': 'azure-key-a',
+        'azure_endpoint': 'https://example-resource.openai.azure.com/',
+        'deployment_name': 'whisper',
+        'api_version': '2024-02-01',
+    },
+    {
+        'api_key': 'azure-key-b',
+        'azure_endpoint': 'https://example-resource-b.openai.azure.com',
+    },
+])
+if len(azure_configs) != 2 or azure_configs[0]['azure_endpoint'].endswith('/'):
+    raise RuntimeError('self-test Azure config normalizer failed')
+azure_url = globals_dict['build_azure_whisper_transcription_url'](azure_configs[0])
+if '/openai/deployments/whisper/audio/transcriptions?api-version=2024-02-01' not in azure_url:
+    raise RuntimeError('self-test Azure transcription URL builder failed')
+attempted_azure_keys = []
+def fake_azure_call(config):
+    attempted_azure_keys.append(config['api_key'])
+    if len(attempted_azure_keys) == 1:
+        raise globals_dict['ExternalApiBusyError']('quota')
+    return 'azure transcript'
+azure_text = globals_dict['call_with_azure_openai_config_pool'](azure_configs, fake_azure_call)
+if azure_text != 'azure transcript' or attempted_azure_keys != ['azure-key-a', 'azure-key-b']:
+    raise RuntimeError('self-test Azure config failover failed')
+if globals_dict['get_transcription_engine_value']('Azure Cloud Whisper') != globals_dict['TRANSCRIPTION_ENGINE_AZURE_OPENAI']:
+    raise RuntimeError('self-test transcription engine resolver failed')
+app = globals_dict['CatAudioCutterApp']()
+app.root.update_idletasks()
+if app.cut_button.cget('text') != '\u05d4\u05e4\u05e2\u05dc':
+    raise RuntimeError('self-test UI did not create the neutral run button')
+app.transcription_engine_var.set('Azure Cloud Whisper')
+app.toggle_transcription_engine_settings()
+local_model_state = app.local_model_combo.cget('state')
+if local_model_state != 'disabled' and not app.local_model_combo.instate(['disabled']):
+    raise RuntimeError('self-test UI did not disable the local model selector for Azure engine: ' + str(local_model_state))
+app.root.destroy()
 shutil.rmtree(test_root, ignore_errors=True)
 print('SELFTEST_OK')
 "@

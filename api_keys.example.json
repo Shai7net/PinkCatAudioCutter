@@ -7,5 +7,13 @@
   ],
   "openrouter": [
     "PASTE_OPENROUTER_API_KEY_HERE"
+  ],
+  "azure_openai": [
+    {
+      "api_key": "YOUR_AZURE_API_KEY",
+      "azure_endpoint": "https://YOUR_RESOURCE_NAME.openai.azure.com",
+      "deployment_name": "whisper",
+      "api_version": "2024-02-01"
+    }
   ]
 }

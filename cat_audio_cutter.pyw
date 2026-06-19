@@ -28,6 +28,7 @@ UPDATE_ZIP_URL = f"{UPDATE_REPO_URL}/archive/refs/heads/{UPDATE_BRANCH}.zip"
 UPDATE_SOURCE_FILES = [
     ".gitignore",
     "README.md",
+    "api_keys.example.json",
     "cat_audio_cutter.pyw",
     "launch_cat_audio_cutter_bundled.ps1",
     "open_cat_audio_cutter.bat",
@@ -77,6 +78,13 @@ LOCAL_MODEL_OPTIONS = {
     "מדויק יותר לעברית - Ivrit AI large-v3-turbo": "ivrit-ai/whisper-large-v3-turbo-ct2",
 }
 DEFAULT_LOCAL_MODEL_LABEL = "מהיר ומתאים למחשב הזה - Whisper small"
+TRANSCRIPTION_ENGINE_LOCAL = "local_whisper"
+TRANSCRIPTION_ENGINE_AZURE_OPENAI = "azure_openai"
+TRANSCRIPTION_ENGINE_OPTIONS = {
+    "Local Whisper - במחשב": TRANSCRIPTION_ENGINE_LOCAL,
+    "Azure Cloud Whisper": TRANSCRIPTION_ENGINE_AZURE_OPENAI,
+}
+DEFAULT_TRANSCRIPTION_ENGINE_LABEL = "Local Whisper - במחשב"
 EXTERNAL_PROVIDER_OPENAI = "openai"
 EXTERNAL_PROVIDER_GEMINI = "gemini"
 EXTERNAL_PROVIDER_OPENROUTER = "openrouter"
@@ -91,6 +99,9 @@ DEFAULT_GEMINI_TRANSCRIPTION_URL = "https://generativelanguage.googleapis.com/v1
 DEFAULT_GEMINI_TRANSCRIPTION_MODEL = "gemini-flash-latest"
 DEFAULT_OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_TEXT_MODEL = "openrouter/auto"
+AZURE_OPENAI_CONFIG_KEY = "azure_openai"
+DEFAULT_AZURE_OPENAI_DEPLOYMENT_NAME = "whisper"
+DEFAULT_AZURE_OPENAI_API_VERSION = "2024-02-01"
 EXTERNAL_TRANSCRIPTION_TIMEOUT_SECONDS = 1800
 GEMINI_RETRY_DELAYS_SECONDS = [8, 18, 35]
 API_KEY_FAILOVER_STATUS_CODES = {401, 402, 403, 429, 500, 502, 503, 504}
@@ -192,6 +203,52 @@ def parse_api_key_lines(raw_text: str):
     return keys
 
 
+def normalize_azure_openai_config(record):
+    if not isinstance(record, dict):
+        return None
+
+    api_key = str(record.get("api_key", "")).strip()
+    azure_endpoint = str(record.get("azure_endpoint", "")).strip().rstrip("/")
+    deployment_name = str(record.get("deployment_name", "") or DEFAULT_AZURE_OPENAI_DEPLOYMENT_NAME).strip()
+    api_version = str(record.get("api_version", "") or DEFAULT_AZURE_OPENAI_API_VERSION).strip()
+    if not api_key or not azure_endpoint:
+        return None
+
+    return {
+        "api_key": api_key,
+        "azure_endpoint": azure_endpoint,
+        "deployment_name": deployment_name or DEFAULT_AZURE_OPENAI_DEPLOYMENT_NAME,
+        "api_version": api_version or DEFAULT_AZURE_OPENAI_API_VERSION,
+    }
+
+
+def normalize_azure_openai_configs(value):
+    if isinstance(value, dict):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+
+    configs = []
+    seen = set()
+    for item in values:
+        config = normalize_azure_openai_config(item)
+        if not config:
+            continue
+        identity = (
+            config["api_key"],
+            config["azure_endpoint"],
+            config["deployment_name"],
+            config["api_version"],
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        configs.append(config)
+    return configs
+
+
 def load_api_key_store():
     store = load_json_file(get_api_keys_file_path(), {})
     if not isinstance(store, dict):
@@ -201,6 +258,9 @@ def load_api_key_store():
     for provider, value in store.items():
         provider_name = str(provider).strip()
         if not provider_name:
+            continue
+        if provider_name == AZURE_OPENAI_CONFIG_KEY:
+            normalized[provider_name] = normalize_azure_openai_configs(value)
             continue
         if isinstance(value, list):
             keys = parse_api_key_lines("\n".join(str(item) for item in value))
@@ -217,12 +277,17 @@ def save_api_key_store(store):
     for provider, keys in (store or {}).items():
         provider_name = str(provider).strip()
         if provider_name:
-            normalized[provider_name] = parse_api_key_lines("\n".join(keys or []))
+            if provider_name == AZURE_OPENAI_CONFIG_KEY:
+                normalized[provider_name] = normalize_azure_openai_configs(keys)
+            else:
+                normalized[provider_name] = parse_api_key_lines("\n".join(keys or []))
     save_json_file(get_api_keys_file_path(), normalized)
 
 
 def read_api_keys_for_provider(provider: str):
     provider = (provider or "").strip()
+    if provider == AZURE_OPENAI_CONFIG_KEY:
+        return []
     store = load_api_key_store()
     keys = store.get(provider, [])
     if provider == EXTERNAL_PROVIDER_GEMINI:
@@ -232,9 +297,14 @@ def read_api_keys_for_provider(provider: str):
     return keys
 
 
+def read_azure_openai_configs():
+    store = load_api_key_store()
+    return normalize_azure_openai_configs(store.get(AZURE_OPENAI_CONFIG_KEY, []))
+
+
 def write_api_keys_for_provider(provider: str, keys):
     provider = (provider or "").strip()
-    if not provider:
+    if not provider or provider == AZURE_OPENAI_CONFIG_KEY:
         return
     store = load_api_key_store()
     store[provider] = parse_api_key_lines("\n".join(keys or []))
@@ -249,6 +319,7 @@ def ensure_api_keys_file_exists() -> str:
                 EXTERNAL_PROVIDER_OPENAI: [],
                 EXTERNAL_PROVIDER_GEMINI: [],
                 EXTERNAL_PROVIDER_OPENROUTER: [],
+                AZURE_OPENAI_CONFIG_KEY: [],
             }
         )
     return key_path
@@ -665,6 +736,17 @@ def get_local_model_name(model_label: str) -> str:
     return LOCAL_MODEL_OPTIONS.get(model_label, model_label.strip() or LOCAL_MODEL_OPTIONS[DEFAULT_LOCAL_MODEL_LABEL])
 
 
+def get_transcription_engine_value(engine_label: str) -> str:
+    return TRANSCRIPTION_ENGINE_OPTIONS.get(engine_label, (engine_label or "").strip() or TRANSCRIPTION_ENGINE_LOCAL)
+
+
+def get_transcription_engine_label(engine_value: str) -> str:
+    for label, value in TRANSCRIPTION_ENGINE_OPTIONS.items():
+        if value == engine_value:
+            return label
+    return DEFAULT_TRANSCRIPTION_ENGINE_LABEL
+
+
 def write_transcript_files(audio_path: str, output_dir: str, text: str):
     clean_text = (text or "").strip()
     if not clean_text:
@@ -817,6 +899,52 @@ class ExternalApiHttpError(RuntimeError):
         self.status_code = status_code
 
 
+def get_api_error_status_code(error: Exception):
+    for attr in ("status_code", "status", "code"):
+        value = getattr(error, attr, None)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+
+    response = getattr(error, "response", None)
+    for attr in ("status_code", "status"):
+        value = getattr(response, attr, None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def redact_secrets_from_message(message: str, secrets):
+    redacted = str(message or "")
+    for secret in secrets or []:
+        secret = str(secret or "").strip()
+        if secret and len(secret) >= 8:
+            redacted = redacted.replace(secret, "***")
+    return redacted
+
+
+def record_api_state_metric(provider: str, state: str, error: Exception = None, config_index: int = None):
+    try:
+        from ddtrace import tracer
+    except Exception:
+        return
+
+    try:
+        span = tracer.current_span()
+        if not span:
+            return
+        span.set_tag("pinkcat.api.provider", provider)
+        span.set_tag("pinkcat.api.state", state)
+        if config_index is not None:
+            span.set_tag("pinkcat.api.config_index", config_index)
+        if error is not None:
+            span.set_tag("pinkcat.api.error_type", type(error).__name__)
+            span.set_tag("pinkcat.api.error", True)
+    except Exception:
+        return
+
+
 def should_try_next_api_key(error: Exception) -> bool:
     if isinstance(error, ExternalApiBusyError):
         return True
@@ -841,6 +969,28 @@ def call_with_api_key_pool(api_keys, service_label: str, call_factory):
             raise
 
     raise RuntimeError(f"כל מפתחות ה-API עבור {service_label} נכשלו.") from last_error
+
+
+def call_with_azure_openai_config_pool(configs, call_factory):
+    azure_configs = normalize_azure_openai_configs(configs)
+    if not azure_configs:
+        raise RuntimeError("לא נמצאו הגדרות Azure OpenAI תקינות בקובץ api_keys.json.")
+
+    last_error = None
+    for index, config in enumerate(azure_configs, start=1):
+        try:
+            record_api_state_metric("azure_openai_whisper", "attempt", config_index=index)
+            result = call_factory(config)
+            record_api_state_metric("azure_openai_whisper", "success", config_index=index)
+            return result
+        except Exception as error:
+            last_error = error
+            record_api_state_metric("azure_openai_whisper", "error", error=error, config_index=index)
+            if index < len(azure_configs) and should_try_next_api_key(error):
+                continue
+            raise
+
+    raise RuntimeError("כל הגדרות Azure OpenAI Whisper נכשלו.") from last_error
 
 
 def prepare_audio_for_local_transcription(audio_path: str, working_dir: str, index: int):
@@ -953,6 +1103,133 @@ def encode_multipart_form(fields, file_field_name: str, file_path: str):
     body.extend(f"--{boundary}--\r\n".encode("utf-8"))
 
     return bytes(body), f"multipart/form-data; boundary={boundary}"
+
+
+def build_azure_whisper_transcription_url(config_dict):
+    config = normalize_azure_openai_config(config_dict)
+    if not config:
+        raise RuntimeError("הגדרות Azure OpenAI אינן תקינות.")
+
+    endpoint = config["azure_endpoint"].rstrip("/")
+    deployment = urllib.parse.quote(config["deployment_name"], safe="")
+    api_version = urllib.parse.quote(config["api_version"], safe="-_.")
+    return f"{endpoint}/openai/deployments/{deployment}/audio/transcriptions?api-version={api_version}"
+
+
+def transcribe_via_azure_whisper_http(audio_file_path: str, config_dict):
+    config = normalize_azure_openai_config(config_dict)
+    if not config:
+        raise RuntimeError("הגדרות Azure OpenAI אינן תקינות.")
+
+    body, content_type = encode_multipart_form(
+        {
+            "language": "he",
+        },
+        "file",
+        audio_file_path,
+    )
+    headers = {
+        "Content-Type": content_type,
+        "Accept": "application/json, text/plain",
+        "api-key": config["api_key"],
+    }
+    request = urllib.request.Request(
+        build_azure_whisper_transcription_url(config),
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=EXTERNAL_TRANSCRIPTION_TIMEOUT_SECONDS) as response:
+            return extract_transcript_text(response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        clean_details = redact_secrets_from_message(details[:700], [config["api_key"]])
+        if error.code in API_KEY_FAILOVER_STATUS_CODES:
+            raise ExternalApiBusyError(f"Azure OpenAI Whisper לא זמין כרגע או נחסם. קוד {error.code}: {clean_details}") from error
+        raise ExternalApiHttpError(f"Azure OpenAI Whisper החזיר שגיאה {error.code}: {clean_details}", error.code) from error
+    except urllib.error.URLError as error:
+        clean_error = redact_secrets_from_message(error, [config["api_key"]])
+        raise ExternalApiBusyError(f"לא הצלחתי להתחבר ל-Azure OpenAI Whisper: {clean_error}") from error
+
+
+def transcribe_via_azure_whisper(audio_file_path: str, config_dict):
+    if not os.path.exists(audio_file_path):
+        raise FileNotFoundError(f"Normalized audio segment missing: {audio_file_path}")
+
+    config = normalize_azure_openai_config(config_dict)
+    if not config:
+        raise RuntimeError("הגדרות Azure OpenAI אינן תקינות.")
+
+    configure_certifi_for_bundled_runtime()
+    try:
+        from openai import AzureOpenAI
+    except ImportError:
+        return transcribe_via_azure_whisper_http(audio_file_path, config)
+
+    try:
+        client = AzureOpenAI(
+            api_key=config["api_key"],
+            api_version=config["api_version"],
+            azure_endpoint=config["azure_endpoint"],
+        )
+
+        with open(audio_file_path, "rb") as audio_file:
+            response = client.audio.transcriptions.create(
+                model=config["deployment_name"],
+                file=audio_file,
+                language="he",
+            )
+
+        text = getattr(response, "text", None)
+        if isinstance(text, str):
+            return text.strip()
+        if isinstance(response, dict):
+            return extract_transcript_text(json.dumps(response, ensure_ascii=False))
+        return extract_transcript_text(str(response))
+
+    except Exception as error:
+        status_code = get_api_error_status_code(error)
+        clean_error = redact_secrets_from_message(error_details(error), [config["api_key"]])
+        print(f"[Azure Whisper Error] API call failed: {clean_error}")
+        if status_code is None or status_code in API_KEY_FAILOVER_STATUS_CODES:
+            raise ExternalApiBusyError(f"Azure API error: {clean_error}") from error
+        raise ExternalApiHttpError(f"Azure API error {status_code}: {clean_error}", status_code) from error
+
+
+def transcribe_audio_files_with_azure_whisper(
+    audio_paths,
+    output_dir: str,
+    azure_configs,
+    progress_callback,
+    working_dir: str,
+):
+    transcript_files = []
+    combined_sections = []
+    total = len(audio_paths)
+
+    for index, audio_path in enumerate(audio_paths, start=1):
+        try:
+            progress_callback(index, total, f"מכינה מקטע {index}/{total} ל-Azure Whisper")
+            transcription_source = prepare_audio_for_local_transcription(audio_path, working_dir, index)
+            progress_callback(index, total, f"מתמללת מקטע {index}/{total} ב-Azure Whisper")
+            text = call_with_azure_openai_config_pool(
+                azure_configs,
+                lambda config: transcribe_via_azure_whisper(transcription_source, config),
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"לא הצלחתי לתמלל את מקטע {index} דרך Azure Whisper: {os.path.basename(audio_path)}\n\n"
+                f"פרטים טכניים:\n{error_details(error)}"
+            ) from error
+
+        transcript_path, clean_text = write_transcript_files(audio_path, output_dir, text)
+        transcript_files.append(transcript_path)
+        combined_sections.append(f"--- {os.path.basename(audio_path)} ---\n{clean_text}")
+
+    combined_path = write_combined_transcript(output_dir, combined_sections)
+    transcript_files.append(combined_path)
+    return transcript_files, "\n\n".join(combined_sections), combined_path
 
 
 def get_external_provider_value(provider_label: str) -> str:
@@ -1486,6 +1763,9 @@ class CatAudioCutterApp:
         self.bitrate_var = tk.StringVar(value=setting("bitrate", DEFAULT_MP3_BITRATE))
         self.sample_rate_var = tk.StringVar(value=setting("sample_rate", DEFAULT_MP3_SAMPLE_RATE))
         self.transcription_mode_var = tk.StringVar(value=setting("transcription_mode", TRANSCRIPTION_LOCAL))
+        self.transcription_engine_var = tk.StringVar(
+            value=get_transcription_engine_label(setting("transcription_engine", TRANSCRIPTION_ENGINE_LOCAL))
+        )
         self.local_model_var = tk.StringVar(value=setting("local_model_label", DEFAULT_LOCAL_MODEL_LABEL))
         self.improve_local_transcript_with_gemini_var = tk.BooleanVar(value=setting("improve_local_with_gemini", False))
         self.add_professional_summary_var = tk.BooleanVar(value=setting("add_professional_summary", False))
@@ -1827,8 +2107,8 @@ class CatAudioCutterApp:
         mode_row.pack(fill="x", pady=(10, 8))
 
         mode_options = [
-            ("מקומי במחשב", TRANSCRIPTION_LOCAL),
-            ("מקומי + תיקון API", TRANSCRIPTION_EXTERNAL),
+            ("תמלול בלבד", TRANSCRIPTION_LOCAL),
+            ("תמלול + תיקון API", TRANSCRIPTION_EXTERNAL),
             ("WhatsApp", TRANSCRIPTION_WHATSAPP),
             ("רק לשמור", TRANSCRIPTION_NONE),
         ]
@@ -1860,32 +2140,52 @@ class CatAudioCutterApp:
         ).pack(anchor="w", pady=(2, 8))
 
         self.local_transcription_frame = tk.Frame(section, bg=CARD)
-        local_model_row = tk.Frame(self.local_transcription_frame, bg=CARD)
-        local_model_row.pack(fill="x")
+        engine_row = tk.Frame(self.local_transcription_frame, bg=CARD)
+        engine_row.pack(fill="x", pady=(0, 8))
         tk.Label(
-            local_model_row,
+            engine_row,
+            text="מנוע תמלול",
+            bg=CARD,
+            fg=TEXT,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left", padx=(0, 8))
+        self.transcription_engine_combo = ttk.Combobox(
+            engine_row,
+            textvariable=self.transcription_engine_var,
+            values=list(TRANSCRIPTION_ENGINE_OPTIONS.keys()),
+            state="readonly",
+            width=28,
+        )
+        self.transcription_engine_combo.pack(side="left")
+        self.transcription_engine_combo.bind("<<ComboboxSelected>>", lambda _event: self.toggle_transcription_engine_settings())
+
+        self.local_model_row = tk.Frame(self.local_transcription_frame, bg=CARD)
+        self.local_model_row.pack(fill="x")
+        tk.Label(
+            self.local_model_row,
             text="מודל מקומי",
             bg=CARD,
             fg=TEXT,
             font=("Segoe UI", 10, "bold"),
         ).pack(side="left", padx=(0, 8))
         self.local_model_combo = ttk.Combobox(
-            local_model_row,
+            self.local_model_row,
             textvariable=self.local_model_var,
             values=list(LOCAL_MODEL_OPTIONS.keys()),
             state="readonly",
             width=42,
         )
         self.local_model_combo.pack(side="left")
-        ttk.Button(
-            local_model_row,
+        self.local_model_download_button = ttk.Button(
+            self.local_model_row,
             text="בדוק/הורד מודל",
             command=self.start_model_download,
             style="Compact.TButton",
-        ).pack(side="left", padx=(10, 0))
+        )
+        self.local_model_download_button.pack(side="left", padx=(10, 0))
         tk.Checkbutton(
             self.local_transcription_frame,
-            text="אחרי התמלול המקומי, לתקן את הטקסט עם Gemini/OpenRouter",
+            text="אחרי התמלול, לתקן את הטקסט עם Gemini/OpenRouter",
             variable=self.improve_local_transcript_with_gemini_var,
             command=self.toggle_transcription_settings,
             bg=CARD,
@@ -1895,9 +2195,10 @@ class CatAudioCutterApp:
             selectcolor="#fff6fb",
             font=("Segoe UI", 10, "bold"),
         ).pack(anchor="w", pady=(10, 0))
+        self.transcription_engine_note_var = tk.StringVar()
         tk.Label(
             self.local_transcription_frame,
-            text="התמלול תמיד מתחיל במודל המקומי. בפעם הראשונה המודל יורד מהאינטרנט; אחר כך הוא רץ מהמחשב. תיקון עם API שולח רק את טקסט התמלול, לא את קובץ האודיו.",
+            textvariable=self.transcription_engine_note_var,
             bg=CARD,
             fg=TEXT,
             font=("Segoe UI", 9),
@@ -2080,7 +2381,7 @@ class CatAudioCutterApp:
         tk.Label(
             hint,
             text=(
-                "🐱 אחרי הסיום הקבצים יישמרו אוטומטית לתיקייה שבחרת. במצב המקומי יישמר גם קובץ TXT לכל מקטע "
+                "🐱 אחרי הסיום הקבצים יישמרו אוטומטית לתיקייה שבחרת. במצב תמלול יישמר גם קובץ TXT לכל מקטע "
                 "וקובץ תמלול מאוחד.\n"
                 "אפשר לעבוד גם בלי חיתוך: בטלי את סימון החיתוך והכלי יתמלל את הקובץ כיחידה אחת.\n"
                 "ברירת המחדל היא MP3. "
@@ -2131,6 +2432,7 @@ class CatAudioCutterApp:
             "bitrate": self.bitrate_var.get().strip(),
             "sample_rate": self.sample_rate_var.get().strip(),
             "transcription_mode": self.transcription_mode_var.get(),
+            "transcription_engine": get_transcription_engine_value(self.transcription_engine_var.get()),
             "local_model_label": self.local_model_var.get(),
             "improve_local_with_gemini": self.improve_local_transcript_with_gemini_var.get(),
             "add_professional_summary": self.add_professional_summary_var.get(),
@@ -2314,7 +2616,29 @@ class CatAudioCutterApp:
         elif mode == TRANSCRIPTION_NONE:
             self.no_transcription_frame.pack(fill="x", pady=(8, 0))
 
+        self.toggle_transcription_engine_settings()
         self.update_scroll_helpers()
+
+    def toggle_transcription_engine_settings(self):
+        if not hasattr(self, "local_model_combo"):
+            return
+
+        engine = get_transcription_engine_value(self.transcription_engine_var.get())
+        if engine == TRANSCRIPTION_ENGINE_AZURE_OPENAI:
+            self.local_model_combo.configure(state="disabled")
+            self.local_model_download_button.configure(state="disabled")
+            self.transcription_engine_note_var.set(
+                "Azure Cloud Whisper מתמלל בענן במקום המודל המקומי. לפני השליחה הכלי מייצר בתיקייה זמנית "
+                "קובץ WAV מונו 16k כדי למנוע בעיות נתיב/Unicode ולשמור על יציבות. תיקון וסיכום API עדיין "
+                "מקבלים רק טקסט, לא אודיו."
+            )
+        else:
+            self.local_model_combo.configure(state="readonly")
+            self.local_model_download_button.configure(state="normal")
+            self.transcription_engine_note_var.set(
+                "התמלול מתחיל במודל המקומי. בפעם הראשונה המודל יורד מהאינטרנט; אחר כך הוא רץ מהמחשב. "
+                "תיקון עם API שולח רק את טקסט התמלול, לא את קובץ האודיו."
+            )
 
     def on_external_provider_change(self, initial=False):
         provider = get_external_provider_value(self.external_provider_var.get())
@@ -2678,7 +3002,20 @@ class CatAudioCutterApp:
         if transcription_mode not in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL, TRANSCRIPTION_WHATSAPP, TRANSCRIPTION_NONE}:
             raise ValueError("בחרי מצב תמלול תקין.")
 
+        transcription_engine = get_transcription_engine_value(self.transcription_engine_var.get())
+        if transcription_engine not in {TRANSCRIPTION_ENGINE_LOCAL, TRANSCRIPTION_ENGINE_AZURE_OPENAI}:
+            raise ValueError("בחרי מנוע תמלול תקין.")
+
         local_model_name = get_local_model_name(self.local_model_var.get())
+        azure_openai_configs = []
+        if transcription_mode in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL} and transcription_engine == TRANSCRIPTION_ENGINE_AZURE_OPENAI:
+            azure_openai_configs = read_azure_openai_configs()
+            if not azure_openai_configs:
+                raise ValueError(
+                    "בחרת Azure Cloud Whisper, אבל לא נמצאו הגדרות Azure OpenAI תקינות.\n\n"
+                    f"הוסיפי בלוק azure_openai בקובץ:\n{get_api_keys_file_path()}"
+                )
+
         external_provider = get_external_provider_value(self.external_provider_var.get())
         external_api_url = self.external_api_url_var.get().strip()
         external_model = self.external_model_var.get().strip()
@@ -2743,7 +3080,9 @@ class CatAudioCutterApp:
             "sample_rate": sample_rate,
             "output_dir": output_dir,
             "transcription_mode": transcription_mode,
+            "transcription_engine": transcription_engine,
             "local_model_name": local_model_name,
+            "azure_openai_configs": azure_openai_configs,
             "improve_local_with_gemini": improve_local_with_gemini,
             "add_professional_summary": add_professional_summary,
             "external_provider": external_provider,
@@ -2860,36 +3199,61 @@ class CatAudioCutterApp:
             transcription_mode = settings["transcription_mode"]
 
             if transcription_mode in {TRANSCRIPTION_LOCAL, TRANSCRIPTION_EXTERNAL}:
-                self.root.after(
-                    0,
-                    lambda: (
-                        self.set_processing_hint("טוענת מודל תמלול מקומי"),
-                        self.set_status("מתמללת בעברית על המחשב. אחר כך, אם נבחר API, רק הטקסט יישלח לתיקון..."),
-                        self.set_progress(62),
-                    ),
-                )
-                transcript_files, transcript_text, transcript_path = transcribe_audio_files_locally(
-                    split_paths,
-                    settings["output_dir"],
-                    settings["local_model_name"],
-                    lambda current, total, label: self.root.after(
+                transcription_engine = settings.get("transcription_engine", TRANSCRIPTION_ENGINE_LOCAL)
+                if transcription_engine == TRANSCRIPTION_ENGINE_AZURE_OPENAI:
+                    self.root.after(
                         0,
-                        lambda current=current, total=total, label=label: (
-                            self.set_processing_hint(label),
-                            self.set_progress(78 + (current / max(total, 1)) * 17),
-                            self.set_status(f"מתמללת מקטע {current} מתוך {total} בעברית..."),
+                        lambda: (
+                            self.set_processing_hint("מכינה Azure Whisper"),
+                            self.set_status("מכינה WAV זמני מונו 16k ושולחת את המקטעים ל-Azure Cloud Whisper..."),
+                            self.set_progress(62),
                         ),
-                    ),
-                    lambda label, percent=None: self.root.after(
+                    )
+                    transcript_files, transcript_text, transcript_path = transcribe_audio_files_with_azure_whisper(
+                        split_paths,
+                        settings["output_dir"],
+                        settings["azure_openai_configs"],
+                        lambda current, total, label: self.root.after(
+                            0,
+                            lambda current=current, total=total, label=label: (
+                                self.set_processing_hint(label),
+                                self.set_progress(72 + (current / max(total, 1)) * 23),
+                                self.set_status(f"מתמללת מקטע {current} מתוך {total} דרך Azure Whisper..."),
+                            ),
+                        ),
+                        self.temp_dir,
+                    )
+                else:
+                    self.root.after(
                         0,
-                        lambda label=label, percent=percent: (
-                            self.set_processing_hint(label),
-                            self.set_progress(58 + ((percent or 0) / 100) * 20),
-                            self.set_status(label),
+                        lambda: (
+                            self.set_processing_hint("טוענת מודל תמלול מקומי"),
+                            self.set_status("מתמללת בעברית על המחשב. אחר כך, אם נבחר API, רק הטקסט יישלח לתיקון..."),
+                            self.set_progress(62),
                         ),
-                    ),
-                    self.temp_dir,
-                )
+                    )
+                    transcript_files, transcript_text, transcript_path = transcribe_audio_files_locally(
+                        split_paths,
+                        settings["output_dir"],
+                        settings["local_model_name"],
+                        lambda current, total, label: self.root.after(
+                            0,
+                            lambda current=current, total=total, label=label: (
+                                self.set_processing_hint(label),
+                                self.set_progress(78 + (current / max(total, 1)) * 17),
+                                self.set_status(f"מתמללת מקטע {current} מתוך {total} בעברית..."),
+                            ),
+                        ),
+                        lambda label, percent=None: self.root.after(
+                            0,
+                            lambda label=label, percent=percent: (
+                                self.set_processing_hint(label),
+                                self.set_progress(58 + ((percent or 0) / 100) * 20),
+                                self.set_status(label),
+                            ),
+                        ),
+                        self.temp_dir,
+                    )
                 copied_files.extend(transcript_files)
                 should_improve_text = (
                     transcription_mode == TRANSCRIPTION_EXTERNAL
@@ -2900,7 +3264,7 @@ class CatAudioCutterApp:
                         0,
                         lambda: (
                             self.set_processing_hint("מתקן את הטקסט"),
-                            self.set_status("התמלול המקומי נשמר. ספק ה-AI מקבל עכשיו רק טקסט ומתקן ג'יבריש, תחביר ופיסוק..."),
+                            self.set_status("התמלול נשמר. ספק ה-AI מקבל עכשיו רק טקסט ומתקן ג'יבריש, תחביר ופיסוק..."),
                             self.set_progress(96),
                         ),
                     )
