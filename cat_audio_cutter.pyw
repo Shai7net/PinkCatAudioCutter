@@ -1771,6 +1771,54 @@ def open_whatsapp_chat_by_phone(phone_number: str):
     return False
 
 
+def get_whatsapp_composer_point(left: int, top: int, width: int, height: int):
+    return (
+        left + int(width * 0.68),
+        top + max(40, height - 68),
+    )
+
+
+def focus_whatsapp_message_box():
+    target_window = None
+    try:
+        windows = [
+            window
+            for window in pyautogui.getWindowsWithTitle("WhatsApp")
+            if window.width >= 500 and window.height >= 400
+        ]
+        if windows:
+            target_window = max(windows, key=lambda window: window.width * window.height)
+        else:
+            active_window = pyautogui.getActiveWindow()
+            if active_window and active_window.width >= 500 and active_window.height >= 400:
+                target_window = active_window
+    except Exception:
+        target_window = None
+
+    if target_window is not None:
+        try:
+            if target_window.isMinimized:
+                target_window.restore()
+            target_window.activate()
+            time.sleep(1)
+        except Exception:
+            pass
+
+    if target_window is not None:
+        click_x, click_y = get_whatsapp_composer_point(
+            target_window.left,
+            target_window.top,
+            target_window.width,
+            target_window.height,
+        )
+    else:
+        screen_width, screen_height = pyautogui.size()
+        click_x, click_y = get_whatsapp_composer_point(0, 0, screen_width, screen_height)
+
+    pyautogui.click(click_x, click_y)
+    time.sleep(0.8)
+
+
 def automate_whatsapp_send_to_bot(file_paths, phone_number: str, bot_label: str):
     direct_opened = open_whatsapp_chat_by_phone(phone_number)
     if not direct_opened:
@@ -1792,9 +1840,9 @@ def automate_whatsapp_send_to_bot(file_paths, phone_number: str, bot_label: str)
     if file_paths:
         set_files_to_clipboard(file_paths)
         time.sleep(0.8)
+        focus_whatsapp_message_box()
         pyautogui.hotkey("ctrl", "v")
         time.sleep(3.2)
-        pyautogui.press("enter")
 
 
 def send_audio_files_to_whatsapp_bot(file_paths, temp_dir: str, bot_config):
@@ -2922,8 +2970,8 @@ class CatAudioCutterApp:
         tk.Label(
             self.whatsapp_transcription_frame,
             text=(
-                "המקטעים יישמרו במחשב, יומרו ל-MP3 ויישלחו לבוט בלי הודעת טקסט. "
-                "אם השליחה נכשלת טכנית, הכלי ינסה שוב אוטומטית כ-OGG/Opus."
+                "המקטעים יישמרו במחשב, יומרו ל-MP3 ויודבקו בשורת ההודעה של הבוט. "
+                "אחרי שהקובץ מופיע ב-WhatsApp צריך רק ללחוץ Enter."
             ),
             bg=CARD,
             fg=TEXT,
@@ -4178,8 +4226,8 @@ class CatAudioCutterApp:
                 self.root.after(
                     0,
                     lambda whatsapp_bot_label=whatsapp_bot_label: (
-                        self.set_processing_hint("שולחת לבוט התמלול"),
-                        self.set_status(f"מכינה MP3 ופותחת את הבוט {whatsapp_bot_label} ב-WhatsApp..."),
+                        self.set_processing_hint("מדביקה ב-WhatsApp"),
+                        self.set_status(f"מכינה MP3, פותחת את הבוט {whatsapp_bot_label} ומדביקה בשורת ההודעה..."),
                         self.set_progress(90),
                     ),
                 )
@@ -4302,9 +4350,17 @@ class CatAudioCutterApp:
         self.set_processing_state(False)
         self.set_progress(100)
         audio_files = [path for path in copied_files if Path(path).suffix.lower() in AUDIO_EXTENSIONS]
+        if transcription_mode == TRANSCRIPTION_WHATSAPP:
+            bot_label = (whatsapp_bot_config or {}).get("label", "הבוט שנבחר")
+            format_label = whatsapp_format_used.upper() if whatsapp_format_used else "קובץ שמע"
+            self.set_status(
+                f"קובצי {format_label} הודבקו אצל הבוט {bot_label}. לחצי Enter בחלון WhatsApp כדי לשלוח."
+            )
+            self.save_current_settings()
+            return
+
         transcript_note = " והתמלול נשמר כקובץ TXT" if transcript_path else ""
-        whatsapp_note = " והמקטעים נשלחו ל-WhatsApp" if transcription_mode == TRANSCRIPTION_WHATSAPP else ""
-        self.set_status(f"הפעולה הסתיימה ונשמרו {len(audio_files)} קבצי שמע{transcript_note}{whatsapp_note}. 🐱💗")
+        self.set_status(f"הפעולה הסתיימה ונשמרו {len(audio_files)} קבצי שמע{transcript_note}. 🐱💗")
 
         message_lines = [
             "הפעולה הושלמה בהצלחה.",
@@ -4314,11 +4370,6 @@ class CatAudioCutterApp:
         ]
         if transcript_path:
             message_lines.extend(["", "התמלול נשמר כאן:", transcript_path])
-        elif transcription_mode == TRANSCRIPTION_WHATSAPP:
-            bot_label = (whatsapp_bot_config or {}).get("label", "הבוט שנבחר")
-            format_label = whatsapp_format_used.upper() if whatsapp_format_used else "קובץ שמע"
-            message_lines.extend(["", f"המקטעים נשלחו כ-{format_label} לבוט התמלול ב-WhatsApp: {bot_label}"])
-
         messagebox.showinfo(
             "הפעולה הסתיימה",
             "\n".join(message_lines).strip(),
@@ -4352,11 +4403,8 @@ class CatAudioCutterApp:
                 bot_config = get_whatsapp_bot_config(self.whatsapp_bot_var.get())
                 self.set_status(f"מכינה MP3 ופותחת את בוט התמלול ב-WhatsApp ({bot_config['label']})...")
                 format_used = send_audio_files_to_whatsapp_bot(audio_files, self.temp_dir, bot_config)
-                self.set_status(f"WhatsApp נפתח והמקטעים נשלחו כ-{format_used.upper()} לבוט התמלול. 💌")
-                messagebox.showinfo(
-                    "נשלח",
-                    "פתחתי את בוט התמלול ב-WhatsApp וניסיתי לשלוח אליו את מקטעי השמע.\n"
-                    "אם משהו לא נשלח, הקבצים כבר שמורים אצלך בתיקייה וניתן לשלוח ידנית.",
+                self.set_status(
+                    f"קובצי {format_used.upper()} הודבקו ב-WhatsApp. לחצי Enter בחלון WhatsApp כדי לשלוח."
                 )
             except Exception as error:
                 messagebox.showwarning(
@@ -4376,8 +4424,7 @@ class CatAudioCutterApp:
                     bot_config,
                     WHATSAPP_FALLBACK_FORMAT,
                 )
-                self.set_status("המקטעים נשלחו שוב כ-OGG/Opus לבוט התמלול.")
-                messagebox.showinfo("נשלח שוב", "המקטעים הומרו ל-OGG/Opus ונשלחו שוב בלי הודעת טקסט.")
+                self.set_status("קובצי OGG/Opus הודבקו ב-WhatsApp. לחצי Enter כדי לשלוח.")
             except Exception as error:
                 messagebox.showwarning(
                     "WhatsApp",

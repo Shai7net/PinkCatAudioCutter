@@ -181,6 +181,9 @@ if len(whatsapp_ogg) != 2 or not all(path.endswith('.ogg') and os.path.getsize(p
 default_whatsapp_bot = globals_dict['get_whatsapp_bot_config']('missing-option')
 if default_whatsapp_bot['phone'] != '972559571223':
     raise RuntimeError('self-test WhatsApp bot fallback failed')
+composer_point = globals_dict['get_whatsapp_composer_point'](100, 50, 1000, 700)
+if composer_point != (780, 682):
+    raise RuntimeError('self-test WhatsApp composer position failed')
 body, content_type = globals_dict['encode_multipart_form']({'model': 'test-model'}, 'file', copied[0])
 if b'test-model' not in body or 'multipart/form-data' not in content_type:
     raise RuntimeError('self-test multipart encoding failed')
