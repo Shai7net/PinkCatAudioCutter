@@ -228,6 +228,9 @@ if text != 'שלום':
 repo_id = globals_dict['resolve_faster_whisper_repo_id']('small')
 if repo_id != 'Systran/faster-whisper-small':
     raise RuntimeError('self-test local model resolver failed')
+ivrit_command = globals_dict['build_ivrit_ai_edge_command'](r'C:\Program Files\Microsoft\Edge\Application\msedge.exe')
+if ivrit_command[1] != '--app=https://www.ivrit.ai/he/174-2/' or '--start-maximized' not in ivrit_command:
+    raise RuntimeError('self-test IVRIT AI app-window command failed')
 gemini_url = globals_dict['build_gemini_generate_content_url'](
     globals_dict['DEFAULT_GEMINI_TRANSCRIPTION_URL'],
     'gemini-flash-latest',
@@ -284,6 +287,12 @@ if globals_dict['get_transcription_engine_value']('Azure Cloud Whisper') != glob
     raise RuntimeError('self-test transcription engine resolver failed')
 app = globals_dict['CatAudioCutterApp']()
 app.root.update_idletasks()
+menu_labels = [
+    app.menu_bar.entrycget(index, 'label')
+    for index in range(app.menu_bar.index('end') + 1)
+]
+if 'IVRIT AI' not in menu_labels:
+    raise RuntimeError('self-test UI did not create the IVRIT AI menu tab')
 if not hasattr(app, 'transcribe_button') or not app.transcribe_button.winfo_exists():
     raise RuntimeError('self-test UI did not create the transcribe action card')
 if not hasattr(app, 'player_fill_item'):

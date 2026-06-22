@@ -26,6 +26,7 @@ APP_TITLE = "Pink Cat Audio Cutter"
 UPDATE_REPO_URL = "https://github.com/Shai7net/PinkCatAudioCutter"
 UPDATE_BRANCH = "main"
 UPDATE_ZIP_URL = f"{UPDATE_REPO_URL}/archive/refs/heads/{UPDATE_BRANCH}.zip"
+IVRIT_AI_TRANSCRIBER_URL = "https://www.ivrit.ai/he/174-2/"
 UPDATE_SOURCE_FILES = [
     ".gitignore",
     "README.md",
@@ -581,6 +582,50 @@ def center_toplevel_on_screen(window, width: int = None, height: int = None):
     x = max(0, (window.winfo_screenwidth() - target_width) // 2)
     y = max(0, (window.winfo_screenheight() - target_height) // 2)
     window.geometry(f"{target_width}x{target_height}+{x}+{y}")
+
+
+def find_microsoft_edge_executable():
+    install_roots = [
+        os.environ.get("PROGRAMFILES(X86)"),
+        os.environ.get("PROGRAMFILES"),
+        os.environ.get("LOCALAPPDATA"),
+    ]
+    relative_paths = [
+        os.path.join("Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join("Microsoft", "Edge Beta", "Application", "msedge.exe"),
+    ]
+    for install_root in install_roots:
+        if not install_root:
+            continue
+        for relative_path in relative_paths:
+            candidate = os.path.join(install_root, relative_path)
+            if os.path.isfile(candidate):
+                return candidate
+    return ""
+
+
+def build_ivrit_ai_edge_command(edge_executable: str):
+    return [
+        edge_executable,
+        f"--app={IVRIT_AI_TRANSCRIBER_URL}",
+        "--start-maximized",
+    ]
+
+
+def launch_ivrit_ai_transcriber():
+    edge_executable = find_microsoft_edge_executable()
+    if edge_executable:
+        subprocess.Popen(
+            build_ivrit_ai_edge_command(edge_executable),
+            cwd=os.path.dirname(edge_executable),
+            close_fds=True,
+        )
+        return "edge_app"
+
+    if hasattr(os, "startfile"):
+        os.startfile(IVRIT_AI_TRANSCRIBER_URL)
+        return "default_browser"
+    raise RuntimeError("לא נמצא דפדפן מתאים לפתיחת IVRIT AI.")
 
 
 def parse_ranges_input(ranges_text: str):
@@ -2546,11 +2591,13 @@ class CatAudioCutterApp:
         )
 
     def build_menu(self):
-        menubar = tk.Menu(self.root)
+        menubar = tk.Menu(self.root, tearoff=False)
+        menubar.add_command(label="IVRIT AI", command=self.open_ivrit_ai_transcriber)
         update_menu = tk.Menu(menubar, tearoff=False)
         update_menu.add_command(label="בדוק ועדכן עכשיו", command=self.start_software_update)
         update_menu.add_command(label="פתח עמוד GitHub", command=self.open_github_page)
         menubar.add_cascade(label="עדכון תוכנה", menu=update_menu)
+        self.menu_bar = menubar
         self.root.config(menu=menubar)
 
     def build_ui(self):
@@ -4205,6 +4252,18 @@ class CatAudioCutterApp:
             os.startfile(UPDATE_REPO_URL)
         except OSError:
             messagebox.showwarning("GitHub", f"לא הצלחתי לפתוח את עמוד GitHub:\n{UPDATE_REPO_URL}")
+
+    def open_ivrit_ai_transcriber(self):
+        try:
+            launch_ivrit_ai_transcriber()
+            self.set_status("פתחתי את המתמלל החופשי של IVRIT AI בחלון אפליקציה נפרד.")
+        except (OSError, RuntimeError) as error:
+            messagebox.showwarning(
+                "IVRIT AI",
+                "לא הצלחתי לפתוח את המתמלל של IVRIT AI.\n\n"
+                f"אפשר לפתוח אותו ידנית כאן:\n{IVRIT_AI_TRANSCRIBER_URL}\n\n"
+                f"פרטים:\n{error}",
+            )
 
     def start_software_update(self):
         if self.is_processing:
