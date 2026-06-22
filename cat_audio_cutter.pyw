@@ -604,28 +604,240 @@ def find_microsoft_edge_executable():
     return ""
 
 
-def build_ivrit_ai_edge_command(edge_executable: str):
+def get_ivrit_ai_edge_profile_dir():
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return os.path.join(local_app_data, "PinkCatAudioCutter", "ivrit_ai_edge_profile")
+    return os.path.join(get_app_config_dir(), "ivrit_ai_edge_profile")
+
+
+def build_ivrit_ai_edge_command(edge_executable: str, profile_dir: str):
     return [
         edge_executable,
         f"--app={IVRIT_AI_TRANSCRIBER_URL}",
-        "--start-maximized",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-sync",
+        "--window-size=900,820",
     ]
 
 
-def launch_ivrit_ai_transcriber():
-    edge_executable = find_microsoft_edge_executable()
-    if edge_executable:
-        subprocess.Popen(
-            build_ivrit_ai_edge_command(edge_executable),
-            cwd=os.path.dirname(edge_executable),
-            close_fds=True,
-        )
-        return "edge_app"
+class EmbeddedEdgeView:
+    GWL_STYLE = -16
+    WS_CHILD = 0x40000000
+    WS_POPUP = 0x80000000
+    WS_CAPTION = 0x00C00000
+    WS_THICKFRAME = 0x00040000
+    WS_MINIMIZEBOX = 0x00020000
+    WS_MAXIMIZEBOX = 0x00010000
+    WS_SYSMENU = 0x00080000
+    SW_HIDE = 0
+    SW_SHOW = 5
+    SWP_NOZORDER = 0x0004
+    SWP_FRAMECHANGED = 0x0020
+    SWP_SHOWWINDOW = 0x0040
+    WM_CLOSE = 0x0010
+    MAX_POLL_ATTEMPTS = 80
+    TOP_CHROME_CROP_PX = 32
 
-    if hasattr(os, "startfile"):
-        os.startfile(IVRIT_AI_TRANSCRIBER_URL)
-        return "default_browser"
-    raise RuntimeError("לא נמצא דפדפן מתאים לפתיחת IVRIT AI.")
+    def __init__(self, root, host_frame, on_ready=None, on_error=None):
+        self.root = root
+        self.host_frame = host_frame
+        self.on_ready = on_ready
+        self.on_error = on_error
+        self.process = None
+        self.window_handle = None
+        self.poll_job = None
+        self.poll_attempts = 0
+        self.preexisting_handles = set()
+        self.visible = False
+        self.loading_label = tk.Label(
+            host_frame,
+            text="טוען את IVRIT AI...",
+            bg="#202020",
+            fg="white",
+            font=("Segoe UI", 14, "bold"),
+        )
+        self.loading_label.place(relx=0.5, rely=0.5, anchor="center")
+        self.host_frame.bind("<Configure>", self._on_host_resize, add="+")
+
+    @property
+    def user32(self):
+        return ctypes.windll.user32
+
+    def show(self):
+        self.visible = True
+        if self.window_handle and self.user32.IsWindow(self.window_handle):
+            self.user32.ShowWindow(self.window_handle, self.SW_SHOW)
+            self.root.after_idle(self.resize)
+            return
+        if self.process is not None or self.poll_job:
+            return
+        self.start()
+
+    def start(self):
+        edge_executable = find_microsoft_edge_executable()
+        if not edge_executable:
+            self._fail("Microsoft Edge לא נמצא במחשב.")
+            return
+
+        profile_dir = get_ivrit_ai_edge_profile_dir()
+        try:
+            os.makedirs(profile_dir, exist_ok=True)
+            self.preexisting_handles = {
+                item["handle"] for item in self._enumerate_windows() if "ivrit" in item["title"].lower()
+            }
+            self.process = subprocess.Popen(
+                build_ivrit_ai_edge_command(edge_executable, profile_dir),
+                cwd=os.path.dirname(edge_executable),
+                close_fds=True,
+            )
+        except OSError as error:
+            self.process = None
+            self._fail(f"לא הצלחתי להפעיל את Edge: {error}")
+            return
+
+        self.poll_attempts = 0
+        self.loading_label.configure(text="טוען את IVRIT AI...")
+        self.loading_label.place(relx=0.5, rely=0.5, anchor="center")
+        self.poll_job = self.root.after(250, self._poll_for_window)
+
+    def _enumerate_windows(self):
+        windows = []
+        enum_callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        @enum_callback_type
+        def callback(window_handle, _lparam):
+            if not self.user32.IsWindowVisible(window_handle):
+                return True
+            title_length = self.user32.GetWindowTextLengthW(window_handle)
+            if title_length <= 0:
+                return True
+            title_buffer = ctypes.create_unicode_buffer(title_length + 1)
+            self.user32.GetWindowTextW(window_handle, title_buffer, title_length + 1)
+            process_id = ctypes.c_ulong()
+            self.user32.GetWindowThreadProcessId(window_handle, ctypes.byref(process_id))
+            windows.append(
+                {
+                    "handle": int(window_handle),
+                    "pid": int(process_id.value),
+                    "title": title_buffer.value,
+                }
+            )
+            return True
+
+        self.user32.EnumWindows(callback, 0)
+        return windows
+
+    def _poll_for_window(self):
+        self.poll_job = None
+        self.poll_attempts += 1
+        process_id = self.process.pid if self.process else 0
+        candidates = self._enumerate_windows()
+
+        matching_window = next(
+            (
+                item
+                for item in candidates
+                if item["pid"] == process_id and "ivrit" in item["title"].lower()
+            ),
+            None,
+        )
+        if matching_window is None:
+            matching_window = next(
+                (
+                    item
+                    for item in candidates
+                    if item["handle"] not in self.preexisting_handles
+                    and "ivrit" in item["title"].lower()
+                ),
+                None,
+            )
+
+        if matching_window:
+            self._embed_window(matching_window["handle"])
+            return
+        if self.poll_attempts >= self.MAX_POLL_ATTEMPTS:
+            self._fail("חלון IVRIT AI נפתח, אבל לא הצלחתי לחבר אותו לתוך היישום.")
+            return
+        self.poll_job = self.root.after(250, self._poll_for_window)
+
+    def _embed_window(self, window_handle):
+        self.host_frame.update_idletasks()
+        parent_handle = self.host_frame.winfo_id()
+        self.user32.SetParent(window_handle, parent_handle)
+        style = self.user32.GetWindowLongW(window_handle, self.GWL_STYLE)
+        style &= ~(
+            self.WS_POPUP
+            | self.WS_CAPTION
+            | self.WS_THICKFRAME
+            | self.WS_MINIMIZEBOX
+            | self.WS_MAXIMIZEBOX
+            | self.WS_SYSMENU
+        )
+        style |= self.WS_CHILD
+        self.user32.SetWindowLongW(window_handle, self.GWL_STYLE, style)
+        self.window_handle = window_handle
+        self.loading_label.place_forget()
+        self.resize()
+        if not self.visible:
+            self.user32.ShowWindow(window_handle, self.SW_HIDE)
+        if self.on_ready:
+            self.on_ready()
+
+    def resize(self):
+        if not self.window_handle or not self.user32.IsWindow(self.window_handle):
+            return
+        width = max(1, self.host_frame.winfo_width())
+        height = max(1, self.host_frame.winfo_height())
+        self.user32.SetWindowPos(
+            self.window_handle,
+            0,
+            0,
+            -self.TOP_CHROME_CROP_PX,
+            width,
+            height + self.TOP_CHROME_CROP_PX,
+            self.SWP_NOZORDER | self.SWP_FRAMECHANGED | self.SWP_SHOWWINDOW,
+        )
+
+    def hide(self):
+        self.visible = False
+        if self.window_handle and self.user32.IsWindow(self.window_handle):
+            self.user32.ShowWindow(self.window_handle, self.SW_HIDE)
+
+    def _on_host_resize(self, _event=None):
+        if self.visible:
+            self.resize()
+
+    def _fail(self, message):
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.terminate()
+            except OSError:
+                pass
+        self.process = None
+        self.loading_label.configure(text=message)
+        self.loading_label.place(relx=0.5, rely=0.5, anchor="center")
+        if self.on_error:
+            self.on_error(message)
+
+    def close(self):
+        if self.poll_job:
+            try:
+                self.root.after_cancel(self.poll_job)
+            except tk.TclError:
+                pass
+            self.poll_job = None
+        if self.window_handle and self.user32.IsWindow(self.window_handle):
+            self.user32.PostMessageW(self.window_handle, self.WM_CLOSE, 0, 0)
+        self.window_handle = None
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.terminate()
+            except OSError:
+                pass
+        self.process = None
 
 
 def parse_ranges_input(ranges_text: str):
@@ -2537,6 +2749,9 @@ class CatAudioCutterApp:
         self.whatsapp_transfer_progressbar = None
         self.whatsapp_transfer_animation_job = None
         self.whatsapp_transfer_animation_index = 0
+        self.current_view = "main"
+        self.ivrit_edge_view = None
+        self.ivrit_web_container = None
         self.last_saved_dir = None
         self.last_output_files = []
         self.last_transcript_text = ""
@@ -2566,6 +2781,8 @@ class CatAudioCutterApp:
         self.toggle_random_messages()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(120, self.update_scroll_helpers)
+        if os.environ.get("PINKCAT_IVRIT_EMBED_TEST") == "1":
+            self.root.after(500, self.show_ivrit_ai_view)
 
     def build_styles(self):
         style = ttk.Style()
@@ -2592,7 +2809,8 @@ class CatAudioCutterApp:
 
     def build_menu(self):
         menubar = tk.Menu(self.root, tearoff=False)
-        menubar.add_command(label="IVRIT AI", command=self.open_ivrit_ai_transcriber)
+        menubar.add_command(label="ראשי", command=self.show_main_view)
+        menubar.add_command(label="IVRIT AI", command=self.show_ivrit_ai_view)
         update_menu = tk.Menu(menubar, tearoff=False)
         update_menu.add_command(label="בדוק ועדכן עכשיו", command=self.start_software_update)
         update_menu.add_command(label="פתח עמוד GitHub", command=self.open_github_page)
@@ -2601,7 +2819,11 @@ class CatAudioCutterApp:
         self.root.config(menu=menubar)
 
     def build_ui(self):
-        shell = tk.Frame(self.root, bg=BG)
+        self.content_host = tk.Frame(self.root, bg=BG)
+        self.content_host.pack(fill="both", expand=True)
+
+        shell = tk.Frame(self.content_host, bg=BG)
+        self.main_shell = shell
         shell.pack(fill="both", expand=True)
 
         self.main_canvas = tk.Canvas(shell, bg=BG, highlightthickness=0)
@@ -2613,8 +2835,56 @@ class CatAudioCutterApp:
         self.main_canvas.bind_all("<MouseWheel>", self.on_mousewheel)
         self.quick_scroll_button = ttk.Button(self.root, text="↓", width=3, command=self.scroll_to_actions, style="Pink.TButton")
 
+        self.ivrit_web_container = tk.Frame(self.content_host, bg="#202020")
+        self.ivrit_browser_host = tk.Frame(
+            self.ivrit_web_container,
+            bg="#202020",
+            highlightbackground=STRONG_PINK,
+            highlightthickness=2,
+        )
+        self.ivrit_browser_host.pack(fill="both", expand=True)
+        self.ivrit_edge_view = EmbeddedEdgeView(
+            self.root,
+            self.ivrit_browser_host,
+            on_ready=self.on_ivrit_ai_ready,
+            on_error=self.on_ivrit_ai_error,
+        )
+
         self.build_mockup_canvas()
         self.build_settings_dialog()
+
+    def show_main_view(self):
+        if self.current_view == "main":
+            return
+        self.current_view = "main"
+        if self.ivrit_edge_view:
+            self.ivrit_edge_view.hide()
+        if self.ivrit_web_container:
+            self.ivrit_web_container.pack_forget()
+        self.main_shell.pack(fill="both", expand=True)
+        self.root.after(100, self.update_scroll_helpers)
+        self.set_status("חזרת למסך הראשי.")
+
+    def show_ivrit_ai_view(self):
+        if self.current_view == "ivrit_ai":
+            if self.ivrit_edge_view:
+                self.ivrit_edge_view.show()
+            return
+        self.current_view = "ivrit_ai"
+        self.hide_hover_tooltip()
+        if hasattr(self, "quick_scroll_button"):
+            self.quick_scroll_button.place_forget()
+        self.main_shell.pack_forget()
+        self.ivrit_web_container.pack(fill="both", expand=True)
+        self.root.update_idletasks()
+        self.ivrit_edge_view.show()
+        self.set_status("טוען את IVRIT AI בתוך היישום...")
+
+    def on_ivrit_ai_ready(self):
+        self.set_status("IVRIT AI מוכן להעלאת קובץ מתוך היישום.")
+
+    def on_ivrit_ai_error(self, message):
+        self.set_status(message)
 
     def build_mockup_canvas(self):
         image_path = get_menu_design_image_path()
@@ -4253,18 +4523,6 @@ class CatAudioCutterApp:
         except OSError:
             messagebox.showwarning("GitHub", f"לא הצלחתי לפתוח את עמוד GitHub:\n{UPDATE_REPO_URL}")
 
-    def open_ivrit_ai_transcriber(self):
-        try:
-            launch_ivrit_ai_transcriber()
-            self.set_status("פתחתי את המתמלל החופשי של IVRIT AI בחלון אפליקציה נפרד.")
-        except (OSError, RuntimeError) as error:
-            messagebox.showwarning(
-                "IVRIT AI",
-                "לא הצלחתי לפתוח את המתמלל של IVRIT AI.\n\n"
-                f"אפשר לפתוח אותו ידנית כאן:\n{IVRIT_AI_TRANSCRIBER_URL}\n\n"
-                f"פרטים:\n{error}",
-            )
-
     def start_software_update(self):
         if self.is_processing:
             messagebox.showinfo("עדכון תוכנה", "אי אפשר לעדכן בזמן שהכלי עובד על קובץ. חכי לסיום הפעולה ואז נסי שוב.")
@@ -5304,6 +5562,8 @@ class CatAudioCutterApp:
     def on_close(self):
         self.hide_hover_tooltip()
         self.hide_whatsapp_transfer_dialog()
+        if self.ivrit_edge_view:
+            self.ivrit_edge_view.close()
         if self.whatsapp_notice_window and self.whatsapp_notice_window.winfo_exists():
             self.whatsapp_notice_window.destroy()
             self.whatsapp_notice_window = None

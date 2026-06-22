@@ -228,8 +228,14 @@ if text != 'שלום':
 repo_id = globals_dict['resolve_faster_whisper_repo_id']('small')
 if repo_id != 'Systran/faster-whisper-small':
     raise RuntimeError('self-test local model resolver failed')
-ivrit_command = globals_dict['build_ivrit_ai_edge_command'](r'C:\Program Files\Microsoft\Edge\Application\msedge.exe')
-if ivrit_command[1] != '--app=https://www.ivrit.ai/he/174-2/' or '--start-maximized' not in ivrit_command:
+ivrit_command = globals_dict['build_ivrit_ai_edge_command'](
+    r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+    r'C:\Temp\PinkCatIvritProfile',
+)
+if (
+    ivrit_command[1] != '--app=https://www.ivrit.ai/he/174-2/'
+    or '--user-data-dir=C:\\Temp\\PinkCatIvritProfile' not in ivrit_command
+):
     raise RuntimeError('self-test IVRIT AI app-window command failed')
 gemini_url = globals_dict['build_gemini_generate_content_url'](
     globals_dict['DEFAULT_GEMINI_TRANSCRIPTION_URL'],
@@ -293,6 +299,10 @@ menu_labels = [
 ]
 if 'IVRIT AI' not in menu_labels:
     raise RuntimeError('self-test UI did not create the IVRIT AI menu tab')
+if len(menu_labels) < 3:
+    raise RuntimeError('self-test UI did not create all top-level menu tabs')
+if not app.ivrit_web_container or not app.ivrit_browser_host.winfo_exists():
+    raise RuntimeError('self-test UI did not create the embedded IVRIT AI host')
 if not hasattr(app, 'transcribe_button') or not app.transcribe_button.winfo_exists():
     raise RuntimeError('self-test UI did not create the transcribe action card')
 if not hasattr(app, 'player_fill_item'):

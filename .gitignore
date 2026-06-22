@@ -8,6 +8,7 @@ dist/
 release/
 bundled_stdlib/
 model_cache/
+ivrit_ai_edge_profile/
 tmp_*/
 cat_audio_result_*/
 
